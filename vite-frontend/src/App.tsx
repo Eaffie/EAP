@@ -15,6 +15,7 @@ import RelayPage from "@/pages/relay";
 import GuidePage from "@/pages/guide";
 import MySubPage from "@/pages/my-sub";
 import ConfigPage from "@/pages/config";
+import DnsPage from "@/pages/dns";
 import MonitorPage from "@/pages/monitor";
 import StatusPage from "@/pages/status";
 import { SettingsPage } from "@/pages/settings";
@@ -263,6 +264,14 @@ function App() {
             <ConfigPage />
           </ProtectedRoute>
         } 
+      />
+      <Route
+        path="/dns"
+        element={
+          <ProtectedRoute>
+            {isAdmin() ? <DnsPage /> : <Navigate to="/my-sub" replace />}
+          </ProtectedRoute>
+        }
       />
       <Route 
         path="/settings" 

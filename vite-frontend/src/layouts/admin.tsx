@@ -178,6 +178,17 @@ export default function AdminLayout({
       adminOnly: true
     },
     {
+      path: '/dns',
+      label: 'DNS',
+      icon: (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="9" />
+          <path strokeLinecap="round" d="M3 12h18M12 3c2.5 2.6 3.75 5.6 3.75 9S14.5 18.4 12 21c-2.5-2.6-3.75-5.6-3.75-9S9.5 5.6 12 3z" />
+        </svg>
+      ),
+      adminOnly: true
+    },
+    {
       path: '/config',
       label: '网站配置',
       icon: (
@@ -211,6 +222,7 @@ export default function AdminLayout({
     '/limit',       // 5 限速
     '/tunnel',      // 6 隧道
     '/forward',     // 7 转发
+    '/dns',         // 7.5 DNS(Cloudflare 解析):紧挨网站配置之上
     '/config',
     '/guide',
   ];

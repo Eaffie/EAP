@@ -144,6 +144,60 @@ export const getMyLines = () => Network.post("/inbound/my-lines");
 // 版本信息 / 更新检查(后端拿构建时注入的 commit 跟 GitHub main 比)
 export const getVersionInfo = () => Network.post("/version/info");
 
+// DNS 管理(面板直连 Cloudflare 管解析记录)。只管理员可用。
+// 注意 zoneId / 记录 id 都是 Cloudflare 的字符串主键(32 位 hex),不是数据库自增数字。
+export interface DnsAccount {
+  id: number;
+  name: string;
+  status?: number;
+  createdTime?: number;
+  updatedTime?: number;
+  /** 服务端给的 token 掩码(如 abcd****wxyz),永远拿不到明文 */
+  tokenMask?: string;
+}
+
+export interface DnsZone {
+  id: string;
+  name: string;
+  status?: string;
+  type?: string;
+}
+
+export interface DnsRecord {
+  id: string;
+  zoneId?: string;
+  type: string;
+  name: string;
+  content: string;
+  proxied?: boolean | null;
+  ttl?: number | null;
+}
+
+export const getDnsAccounts = () => Network.post<DnsAccount[]>("/dns/accounts");
+// token 留空 = 只改备注名(沿用已存的 token)
+export const saveDnsAccount = (data: { id?: number | null; name: string; token: string }) =>
+  Network.post("/dns/accounts/save", data);
+export const deleteDnsAccount = (id: number) => Network.post("/dns/accounts/delete", { id });
+export const getDnsZones = (accountId: number) => Network.post<DnsZone[]>("/dns/zones", { accountId });
+export const getDnsRecords = (accountId: number, zoneId: string) =>
+  Network.post<DnsRecord[]>("/dns/records", { accountId, zoneId });
+// id 为空 = 新增,有值 = 修改(橙云开关就是把 proxied 反过来再存一次)
+export const saveDnsRecord = (data: {
+  id?: string | null;
+  accountId: number;
+  zoneId: string;
+  type: string;
+  name: string;
+  content: string;
+  ttl?: number | null;
+  proxied?: boolean;
+}) => Network.post("/dns/record/save", data);
+export const deleteDnsRecord = (accountId: number, zoneId: string, id: string) =>
+  Network.post("/dns/record/delete", { accountId, zoneId, id });
+// 一键指向:把某个域名的 A 记录指向目标 IP(没有就新建一条,橙云关闭)
+export const pointDnsRecord = (accountId: number, name: string, ip: string) =>
+  Network.post("/dns/record/point", { accountId, name, ip });
+
 // 修改密码接口
 export const updatePassword = (data: any) => Network.post("/user/updatePassword", data);
 

@@ -6,6 +6,8 @@ import { Textarea } from "@heroui/input";
 import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from "@heroui/modal";
 import { Chip } from "@heroui/chip";
 import { Switch } from "@heroui/switch";
+import { Autocomplete, AutocompleteItem } from "@heroui/autocomplete";
+import { Select, SelectItem } from "@heroui/select";
 import { Spinner } from "@heroui/spinner";
 import { Alert } from "@heroui/alert";
 import { Progress } from "@heroui/progress";
@@ -25,7 +27,10 @@ import {
   getNodeInstallCommand,
   updateConfig,
   getInboundList,
-  pushNodeConfig
+  pushNodeConfig,
+  getDnsAccounts,
+  getDnsZones,
+  pointDnsRecord
 } from "@/api";
 
 interface Node {
@@ -166,6 +171,88 @@ export default function NodePage() {
   const [installCommandModal, setInstallCommandModal] = useState(false);
   const [installCommand, setInstallCommand] = useState('');
   const [currentNodeName, setCurrentNodeName] = useState('');
+
+  // 「指向这台机器」:把这台机器的连接域名在 Cloudflare 上的 A 记录指到它当前的 IP。
+  // 换机器/换 IP 时不用再去 Cloudflare 网页上改,车友的订阅完全不用动。
+  const [pointNode, setPointNode] = useState<Node | null>(null);
+  const [pointAccounts, setPointAccounts] = useState<any[]>([]);
+  const [pointZones, setPointZones] = useState<any[]>([]);
+  const [pointAccountId, setPointAccountId] = useState<number | null>(null);
+  const [pointDomain, setPointDomain] = useState('');
+  const [pointLoading, setPointLoading] = useState(false);
+  const [pointSaving, setPointSaving] = useState(false);
+
+  // 这台机器当前用哪个 IP 对外:入口IP 取第一个(多 IP 时第一个才是主用),没填才退回服务器IP
+  const nodePointIp = (node: Node | null): string => {
+    if (!node) return '';
+    return (node.ip || '').split(',')[0].trim() || (node.serverIp || '').trim();
+  };
+
+  const openPoint = async (node: Node) => {
+    setPointNode(node);
+    setPointDomain((node.domain || '').trim());
+    setPointAccountId(null);
+    setPointZones([]);
+    setPointLoading(true);
+    try {
+      const res = await getDnsAccounts();
+      if (res.code === 0) {
+        const list = res.data || [];
+        setPointAccounts(list);
+        if (list.length) setPointAccountId(list[0].id);
+      } else {
+        setPointAccounts([]);
+        toast.error(res.msg || '加载 Cloudflare 账号失败');
+      }
+    } catch (error) {
+      setPointAccounts([]);
+      toast.error('加载 Cloudflare 账号失败');
+    } finally {
+      setPointLoading(false);
+    }
+  };
+
+  // 选了账号就把它下面的域名拉来,让用户直接选(也可以手输子域名)
+  useEffect(() => {
+    if (!pointNode || !pointAccountId) {
+      setPointZones([]);
+      return;
+    }
+    let alive = true;
+    getDnsZones(pointAccountId)
+      .then((res) => {
+        if (alive && res.code === 0) setPointZones(res.data || []);
+      })
+      .catch(() => {
+        // 拿不到域名不影响手输,静默即可
+      });
+    return () => {
+      alive = false;
+    };
+  }, [pointNode, pointAccountId]);
+
+  const handlePointSave = async () => {
+    if (!pointNode) return;
+    if (!pointAccountId) return toast.error('先选一个 Cloudflare 账号');
+    const domain = pointDomain.trim();
+    if (!domain || !domain.includes('.')) return toast.error('请填完整域名,如 hk.example.com');
+    const ip = nodePointIp(pointNode);
+    if (!ip) return toast.error('这台机器没填 IP,先去「编辑」里填服务器IP');
+    setPointSaving(true);
+    try {
+      const res = await pointDnsRecord(pointAccountId, domain, ip);
+      if (res.code === 0) {
+        toast.success(res.msg || `已把 ${domain} 指向 ${ip}`);
+        setPointNode(null);
+      } else {
+        toast.error(res.msg || '指向失败');
+      }
+    } catch (error) {
+      toast.error('指向失败');
+    } finally {
+      setPointSaving(false);
+    }
+  };
   
   const websocketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -1123,6 +1210,16 @@ export default function NodePage() {
                       >
                         重推配置
                       </Button>
+                      {/* 换机器/换 IP 时,直接把「连接域名」的 A 记录指到这台机器,不用去 Cloudflare 网页改 */}
+                      <Button
+                        size="sm"
+                        variant="flat"
+                        color="primary"
+                        onPress={() => openPoint(node)}
+                        className="flex-1 min-h-8"
+                      >
+                        指向这台机器
+                      </Button>
                     </div>
                   </div>
                 </CardBody>
@@ -1410,6 +1507,81 @@ export default function NodePage() {
         </Modal>
 
         <NodeMonitorModal node={monitorNode} onClose={() => setMonitorNode(null)} />
+
+        {/* 「指向这台机器」:选账号 → 选/填域名(默认这台机器的连接域名)→ 把 A 记录指到它的 IP */}
+        <Modal isOpen={!!pointNode} onClose={() => setPointNode(null)} size="lg">
+          <ModalContent>
+            <ModalHeader className="flex flex-col gap-1">
+              <span>把域名指向「{pointNode?.name}」</span>
+              <span className="text-sm font-normal text-default-500">
+                目标 IP:<span className="font-mono">{nodePointIp(pointNode) || '这台机器没填 IP'}</span>
+              </span>
+            </ModalHeader>
+            <ModalBody className="space-y-3">
+              {pointLoading ? (
+                <div className="text-sm text-default-500">正在加载 Cloudflare 账号...</div>
+              ) : pointAccounts.length === 0 ? (
+                <div className="text-sm text-default-500">
+                  还没有 Cloudflare 账号。先去左侧菜单的「DNS」页添加一个 API Token(需要 Zone.DNS 编辑权限),
+                  再回来一键指向。
+                </div>
+              ) : (
+                <>
+                  <Select
+                    label="Cloudflare 账号"
+                    placeholder="选一个账号"
+                    selectedKeys={pointAccountId ? [String(pointAccountId)] : []}
+                    onSelectionChange={(k) => {
+                      const v = Array.from(k)[0];
+                      setPointAccountId(v == null ? null : Number(v));
+                    }}
+                  >
+                    {pointAccounts.map((a: any) => (
+                      <SelectItem key={String(a.id)} textValue={a.name}>
+                        {a.name}
+                      </SelectItem>
+                    ))}
+                  </Select>
+                  <Autocomplete
+                    label="域名"
+                    allowsCustomValue
+                    placeholder="hk.example.com"
+                    defaultItems={pointZones.map((z: any) => ({ value: z.name, label: z.name }))}
+                    inputValue={pointDomain}
+                    onInputChange={setPointDomain}
+                    onSelectionChange={(k) => {
+                      if (k) setPointDomain(String(k));
+                    }}
+                    description={
+                      pointNode?.domain
+                        ? '默认是这台机器的「连接域名」;也可以选账号下的域名或手输子域名'
+                        : '这台机器还没填「连接域名」,手动填要指向哪个域名'
+                    }
+                  >
+                    {(item: any) => <AutocompleteItem key={item.value}>{item.label}</AutocompleteItem>}
+                  </Autocomplete>
+                  <div className="text-xs text-default-500 bg-default-100 rounded-lg px-3 py-2">
+                    会把该域名的 <b>A 记录</b> 改成上面那个 IP:已经有这条记录就改内容,没有就新建一条。
+                    橙云代理会自动关闭 —— 节点端口不在 Cloudflare 的代理端口里,开着它客户端连不上。
+                  </div>
+                </>
+              )}
+            </ModalBody>
+            <ModalFooter>
+              <Button variant="light" onPress={() => setPointNode(null)}>
+                取消
+              </Button>
+              <Button
+                color="primary"
+                isDisabled={pointAccounts.length === 0}
+                isLoading={pointSaving}
+                onPress={handlePointSave}
+              >
+                确认指向
+              </Button>
+            </ModalFooter>
+          </ModalContent>
+        </Modal>
 
         {/* 开启 / 关闭 IPv6 确认 */}
         <Modal isOpen={!!ipv6Confirm} onClose={() => setIpv6Confirm(null)} size="md">
