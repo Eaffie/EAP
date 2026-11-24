@@ -612,10 +612,16 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                     getOrCreateLine(user.getId(), dto.getNodeId(), groupLanding, dto.getFlow(), dto.getExpTime()).getSubToken());
         }
         // 限速器优先级:线路级(整条中转一个池) > 车友级(每车友一个池) > 不限
+        // 【只能写 if/else,不能写三元】三元里一条分支是 int(intValue() 的返回)、另一条是 Integer(null),
+        // Java 会把整个表达式提升成 int：走到 null 那条就得拆箱 → NPE "Integer.intValue()"。
+        // 「我自己用」会清空 speedId,线路又没设限速时必然走 null 分支,所以那条路径必崩。
         SpeedLimit lineRule = lineSpeedRule(dto.getNodeId(), groupLanding);
-        Integer userLimiter = (lineRule != null)
-                ? lineRule.getId().intValue()
-                : ((dto.getSpeedId() != null) ? perUserLimiterName(user.getId()) : null);
+        Integer userLimiter = null;
+        if (lineRule != null) {
+            userLimiter = lineRule.getId().intValue();
+        } else if (dto.getSpeedId() != null) {
+            userLimiter = perUserLimiterName(user.getId());
+        }
         java.util.Set<Long> affectedNodes = new java.util.HashSet<>();
         java.util.Set<Long> limiterPushedNodes = new java.util.HashSet<>();
         // 本次分配里已确认「机器上被别的程序占了」的端口,按节点分开记。
