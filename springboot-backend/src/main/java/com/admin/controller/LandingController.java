@@ -75,7 +75,8 @@ public class LandingController extends BaseController {
                 } catch (NumberFormatException e) {
                     continue;
                 }
-                R push = inboundService.pushNodeConfig(nid);
+                // 只推 sing-box:改落地改的是出口串,gost 转发还是指向 127.0.0.1:入站端口,不用重建
+                R push = inboundService.pushNodeSingbox(nid);
                 if (push.getCode() != 0) {
                     failed.append(nid).append(" ");
                 }

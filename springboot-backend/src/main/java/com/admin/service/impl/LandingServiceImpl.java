@@ -63,7 +63,8 @@ public class LandingServiceImpl extends ServiceImpl<LandingMapper, Landing> impl
      * 然后又要去指挥舱删不需要的协议,逻辑上就有点复杂了」—— 原来确实只有 create/delete。
      *
      * 这里只改库,并把「用到这条落地的机器」一并返回;
-     * 重推配置交给 Controller(原因见 InboundService.pushNodeConfig 上的注释:避开循环依赖)。
+     * 重推 sing-box 交给 Controller(原因见 InboundService.pushNodeSingbox 上的注释:避开循环依赖)。
+     * 这里只推 sing-box:改落地改的是出口串,gost 转发还是指向 127.0.0.1:入站端口,不用重建。
      */
     @Override
     public R updateLanding(LandingDto dto) {

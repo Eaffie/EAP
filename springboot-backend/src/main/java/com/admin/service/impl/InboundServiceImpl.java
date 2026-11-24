@@ -81,18 +81,78 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
     private com.admin.common.task.UserNodeNameStore nodeNameStore;
 
     /**
-     * 把某台机器的 sing-box 配置重推一遍。
-     * 【为什么要暴露出来】改了落地的出口串之后,数据库是新的、机器上跑的还是旧配置,
-     * 用户会以为「改了没生效」。但重推不能放在 LandingServiceImpl 里做 ——
-     * 本类已经注入了 LandingService,反向注入会形成循环依赖(Spring Boot 2.6+ 默认禁止),
-     * 所以由 Controller 层编排:先改落地,再调这个方法逐台重推。
+     * 「重推配置」:整机恢复 —— 先推 sing-box,再把该机器下所有 gost 转发服务重建一遍。
+     *
+     * 【为什么要连 gost 一起推】换机器(或机器重装)时,sing-box 那半有各种自动重推的时机
+     * (建/删入站、改落地),gost 那半却只认「转发被碰过」;结果就是库里有转发、机器上一个公网口都没起来,
+     * 而面板上没有任何入口能补。这里一次性做全。
+     *
+     * 【为什么由 InboundServiceImpl 做,而不是 Controller 编排】本类本来就注入了 ForwardService
+     * (见 applyLimiterToLineForwards),转发重建的依赖方向是单向的,不存在 LandingServiceImpl 那种
+     * 循环依赖(那个坑只跟 LandingService 有关:本类注入了它,反向注入就成环)。
+     *
+     * 【失败怎么算】sing-box 推失败直接整体失败(节点多半不通,转发也不用试了);
+     * 转发是逐条推的,单条失败只计数,不影响整体返回,有问题的转发按 ForwardService 原有的规则标 -1。
      */
     @Override
     public R pushNodeConfig(Long nodeId) {
         if (nodeId == null) {
             return R.err("缺少节点 id");
         }
-        return pushNodeSingbox(nodeId);
+        R singbox = pushNodeSingbox(nodeId);
+        if (singbox.getCode() != 0) {
+            return singbox;
+        }
+
+        // 节点下的隧道 → 隧道下的全部转发(forward 表没有 node_id,只能经 tunnel.in_node_id 关联)
+        int ok = 0;
+        int fail = 0;
+        List<Tunnel> tunnels = tunnelMapper.selectList(new QueryWrapper<Tunnel>().eq("in_node_id", nodeId));
+        List<Long> tunnelIds = new java.util.ArrayList<>();
+        if (tunnels != null) {
+            for (Tunnel t : tunnels) {
+                tunnelIds.add(t.getId());
+            }
+        }
+        if (!tunnelIds.isEmpty()) {
+            List<Forward> forwards = forwardMapper.selectList(new QueryWrapper<Forward>().in("tunnel_id", tunnelIds));
+            if (forwards != null) {
+                for (Forward f : forwards) {
+                    // 重推前重查一次:前一条可能要等节点 10 秒,列表里带的 status/流量会旧
+                    Forward fresh = forwardMapper.selectById(f.getId());
+                    if (fresh == null) {
+                        continue;
+                    }
+                    try {
+                        R r = forwardService.repushForward(fresh);
+                        if (r != null && r.getCode() == 0) {
+                            ok++;
+                        } else {
+                            fail++;
+                        }
+                    } catch (Exception e) {
+                        // 单条炸了不能拖垮整批(比如某台落地串坏了)
+                        fail++;
+                        log.warn("重推转发失败 forward=" + f.getId() + ": " + e.getMessage());
+                    }
+                }
+            }
+        }
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("forwardTotal", ok + fail);
+        data.put("forwardOk", ok);
+        data.put("forwardFail", fail);
+        return R.ok(data);
+    }
+
+    /** 按库里的全量重新下发这台机器的 sing-box 配置(整份覆盖,重复点没有副作用) */
+    @Override
+    public R pushNodeSingbox(Long nodeId) {
+        if (nodeId == null) {
+            return R.err("缺少节点 id");
+        }
+        return pushNodeSingbox0(nodeId);
     }
 
     @Override
@@ -2231,7 +2291,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
     // -------- helpers --------
 
     /** 汇总该节点所有入站 + 各入站用户,推 sing-box 配置到节点 */
-    private R pushNodeSingbox(Long nodeId) {
+    private R pushNodeSingbox0(Long nodeId) {
         List<Inbound> inbounds = this.list(new QueryWrapper<Inbound>().eq("node_id", nodeId));
         Map<Long, List<InboundUser>> usersByInbound = new HashMap<>();
         Map<Long, String> landingOutbounds = new HashMap<>();

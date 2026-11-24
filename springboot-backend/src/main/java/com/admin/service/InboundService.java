@@ -27,10 +27,20 @@ public interface InboundService extends IService<Inbound> {
     /** 入站列表 */
     R getInbounds();
 
-    /** 删除入站(连带其用户的 gost 转发 + 重推配置) */
-    /** 把某台机器的 sing-box 配置重推一遍(改了落地出口之后要用) */
+    /**
+     * 「重推配置」:把某台机器的 sing-box 配置 + 该机器下【全部 gost 转发服务】重建一遍。
+     * 换机器 / sing-box 掉了 / gost 公网口全没了时用,整机恢复。
+     * 返回 data = {forwardTotal, forwardOk, forwardFail}。
+     */
     R pushNodeConfig(Long nodeId);
 
+    /**
+     * 只重推 sing-box 配置,不动 gost 转发。
+     * 改落地出口时用(出口串变了但转发目标还是 127.0.0.1:入站端口,重建转发纯属白等)。
+     */
+    R pushNodeSingbox(Long nodeId);
+
+    /** 删除入站(连带其用户的 gost 转发 + 重推配置) */
     R deleteInbound(Long id);
 
     /** 清空某节点上目标组的协议入站(relay=true 清某落地的中转;否则清直连);连带其转发/用户 */

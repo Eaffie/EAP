@@ -79,6 +79,8 @@ const SLOW_PATHS = [
   '/inbound/assign',
   '/inbound/one-click',
   '/inbound/one-click-relay',
+  // 「重推配置」:整机重建,这台机器下有多少条转发就有多少次节点往返,数量一多 30 秒不够
+  '/inbound/push-config',
   '/inbound/delete-by-node',
   '/landing/test',
   '/node/install',

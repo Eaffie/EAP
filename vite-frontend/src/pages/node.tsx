@@ -24,7 +24,8 @@ import {
   deleteNode,
   getNodeInstallCommand,
   updateConfig,
-  getInboundList
+  getInboundList,
+  pushNodeConfig
 } from "@/api";
 
 interface Node {
@@ -121,7 +122,46 @@ export default function NodePage() {
     socks: 0
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
-  
+
+  // 「重推配置」按机器跑(整机恢复),存正在跑的那台机器 id
+  const [repushing, setRepushing] = useState<number | null>(null);
+
+  /**
+   * 重推配置 = 整机恢复:重推这台机器的 sing-box 配置 + 重建它名下【全部】gost 转发服务。
+   *
+   * 为什么需要:换机器 / 机器重装之后,sing-box 那半有各种自动重推的时机(建删入站、改落地),
+   * gost 那半却只在「转发被碰过」时才重建 —— 结果库里有转发、机器上一个公网口都没起来,
+   * 面板上还没有任何入口能补。这台机器上所有线路、所有车友的转发都会一起重建,所以先确认一次。
+   */
+  const handleRepush = async (node: Node) => {
+    if (!window.confirm(
+      `重建「${node.name}」这台机器的配置?\n\n` +
+      `· 重推 sing-box 配置\n` +
+      `· 重建这台机器名下【全部】gost 转发服务(所有线路、所有车友)\n\n` +
+      `重建期间这台机器上的端口会短暂中断;线路参数不变,只是把机器上跑的服务按库里重铺一遍。`
+    )) return;
+
+    setRepushing(node.id);
+    try {
+      const res = await pushNodeConfig(node.id);
+      if (res.code === 0) {
+        const okN = res.data?.forwardOk ?? res.data?.forwardTotal ?? 0;
+        const badN = res.data?.forwardFail ?? 0;
+        if (badN > 0) {
+          toast(`已重推 ${okN} 条转发,${badN} 条失败(机器可能离线)`, { icon: '⚠️', duration: 8000 });
+        } else {
+          toast.success(`已重推 ${okN} 条转发`);
+        }
+      } else {
+        toast.error(res.msg || '重推失败');
+      }
+    } catch (error) {
+      toast.error('重推失败');
+    } finally {
+      setRepushing(null);
+    }
+  };
+
   // 安装命令相关状态
   const [installCommandModal, setInstallCommandModal] = useState(false);
   const [installCommand, setInstallCommand] = useState('');
@@ -1068,6 +1108,20 @@ export default function NodePage() {
                         className="flex-1 min-h-8"
                       >
                         删除
+                      </Button>
+                    </div>
+                    {/* 整机重推:这台机器名下所有线路的 sing-box + gost 服务一起按库里重铺,
+                        换机器/机器重装后 gost 公网口全没了时用 */}
+                    <div className="flex gap-1.5">
+                      <Button
+                        size="sm"
+                        variant="flat"
+                        color="warning"
+                        onPress={() => handleRepush(node)}
+                        isLoading={repushing === node.id}
+                        className="flex-1 min-h-8"
+                      >
+                        重推配置
                       </Button>
                     </div>
                   </div>
