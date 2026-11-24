@@ -1595,23 +1595,38 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
      */
     // ===== 线路级限速(整条中转一个限速器,不按车友分) =====
 
-    /** 取某条中转线路(机器 × 落地)的限速规则;没有返回 null */
+    /**
+     * 取某条线路(机器 × 落地)的限速规则;没有返回 null。
+     * landingId 为空 = 这台机器的直连线路(直连没有落地),这时必须用 isNull 查 ——
+     * eq("landing_id", null) 生成的是 "landing_id = null",永远匹配不到任何行。
+     */
     private SpeedLimit lineSpeedRule(Long nodeId, Long landingId) {
-        if (nodeId == null || landingId == null) {
+        if (nodeId == null) {
             return null;
         }
-        return speedLimitService.getOne(new QueryWrapper<SpeedLimit>()
-                .eq("node_id", nodeId).eq("landing_id", landingId).last("limit 1"));
+        QueryWrapper<SpeedLimit> qw = new QueryWrapper<SpeedLimit>().eq("node_id", nodeId);
+        if (landingId == null) {
+            qw.isNull("landing_id");
+        } else {
+            qw.eq("landing_id", landingId);
+        }
+        return speedLimitService.getOne(qw.last("limit 1"));
     }
 
     /**
      * 把限速器挂到这条线路上所有已存在的转发上(该线路所有车友、所有协议)。
      * limiterId=null 表示解除限速。
+     * landingId 为空 = 直连线路(直连没有落地),同样要 isNull 而不是 eq。
      */
     private void applyLimiterToLineForwards(Long nodeId, Long landingId, Integer limiterId) {
         try {
-            List<Inbound> inbounds = this.list(new QueryWrapper<Inbound>()
-                    .eq("node_id", nodeId).eq("landing_id", landingId));
+            QueryWrapper<Inbound> qw = new QueryWrapper<Inbound>().eq("node_id", nodeId);
+            if (landingId == null) {
+                qw.isNull("landing_id");
+            } else {
+                qw.eq("landing_id", landingId);
+            }
+            List<Inbound> inbounds = this.list(qw);
             for (Inbound in : inbounds) {
                 List<Forward> fs = forwardMapper.selectList(new QueryWrapper<Forward>()
                         .likeRight("name", "inbound-" + in.getId() + "-user-"));
@@ -1629,7 +1644,9 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
     @Override
     public R lineStats() {
-        List<Inbound> inbounds = this.list(new QueryWrapper<Inbound>().isNotNull("landing_id"));
+        // 直连(landing_id 为空)和中转一起返回:直连线路页的「已用流量/已用天数」要用。
+        // 前端按 "机器id-落地id" 取数,直连那条的 key 就是 "机器id-null"。
+        List<Inbound> inbounds = this.list();
         if (inbounds.isEmpty()) {
             return R.ok(new java.util.ArrayList<>());
         }
@@ -1652,7 +1669,8 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             usedByInbound.merge(iid, v, Long::sum);
         }
 
-        // 同一(机器 × 落地)的多条协议合成一条线路;建立时间取最早那个协议
+        // 同一(机器 × 落地)的多条协议合成一条线路;建立时间取最早那个协议。
+        // 直连(landing_id 为空)的 key 是 "机器id-null",前端也按同样的口径取值。
         java.util.Map<String, long[]> agg = new java.util.LinkedHashMap<>();
         for (Inbound in : inbounds) {
             String key = in.getNodeId() + "-" + in.getLandingId();
@@ -1671,7 +1689,8 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             String[] p = e.getKey().split("-");
             java.util.Map<String, Object> m = new java.util.HashMap<>();
             m.put("nodeId", Long.valueOf(p[0]));
-            m.put("landingId", Long.valueOf(p[1]));
+            // 直连没有落地:原样返回 null,前端拿 "机器id-null" 取这条
+            m.put("landingId", "null".equals(p[1]) ? null : Long.valueOf(p[1]));
             m.put("used", e.getValue()[0]);
             m.put("createdAt", e.getValue()[1] == Long.MAX_VALUE ? null : e.getValue()[1]);
             out.add(m);
@@ -1712,16 +1731,24 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
     @Override
     public R setLineSpeed(Long nodeId, Long landingId, Integer speedMbps) {
-        if (nodeId == null || landingId == null) {
+        if (nodeId == null) {
             return R.err("缺少参数");
+        }
+        // 直连线路没有落地:前端可能传 null,也可能传 0,统一按「空」处理
+        if (landingId != null && landingId <= 0) {
+            landingId = null;
         }
         Node node = nodeMapper.selectById(nodeId);
         if (node == null) {
             return R.err("转发机不存在");
         }
-        com.admin.entity.Landing landing = landingMapper.selectById(landingId);
-        if (landing == null) {
-            return R.err("落地不存在");
+        // 中转才校验落地;直连(landingId 为空)跳过
+        com.admin.entity.Landing landing = null;
+        if (landingId != null) {
+            landing = landingMapper.selectById(landingId);
+            if (landing == null) {
+                return R.err("落地不存在");
+            }
         }
         int sp = (speedMbps == null || speedMbps <= 0) ? 0 : speedMbps;
         SpeedLimit rule = lineSpeedRule(nodeId, landingId);
@@ -1742,7 +1769,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
         if (rule == null) {
             rule = new SpeedLimit();
-            rule.setName("线路限速 · " + node.getName() + " · " + landing.getName());
+            rule.setName("线路限速 · " + node.getName() + " · " + (landing == null ? "直连" : landing.getName()));
             rule.setSpeed(sp);
             rule.setMode(0);          // 共享:整条线路一个池
             rule.setTotal(0);

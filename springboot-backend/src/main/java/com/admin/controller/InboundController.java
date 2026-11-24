@@ -182,7 +182,7 @@ public class InboundController extends BaseController {
         return inboundService.unassignUser(Long.valueOf(String.valueOf(body.get("id"))));
     }
 
-    /** 每条中转线路的累计流量 + 建立时间 */
+    /** 每条线路(直连/中转)的累计流量 + 建立时间;直连的 landingId 为 null */
     @RequireRole
     @PostMapping("/line-stats")
     public R lineStats() {
@@ -196,7 +196,10 @@ public class InboundController extends BaseController {
         return inboundService.listLineSpeeds();
     }
 
-    /** 线路级限速:整条中转(机器 × 落地)一个限速,不按车友分。speed<=0 解除 */
+    /**
+     * 线路级限速:整条线路(机器 × 落地;landingId 为空 = 该机的直连)一个限速,不按车友分。
+     * speed&lt;=0 解除。
+     */
     @LogAnnotation
     @RequireRole
     @PostMapping("/line-speed")

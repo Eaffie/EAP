@@ -116,11 +116,12 @@ export const pushNodeConfig = (nodeId: number) => Network.post("/inbound/push-co
 export const oneClickRelay = (nodeId: number, link: string, name?: string, sni?: string, protocols?: string[]) => Network.post("/inbound/one-click-relay", { nodeId, link, name, sni, protocols });
 export const testLanding = (nodeId: number, link: string) => Network.post("/landing/test", { nodeId, link });
 export const getLandingList = () => Network.post("/landing/list");
-// 线路级限速:整条中转(机器 × 落地)一个限速,上传下载各限这么多(MB/s),0=解除
-export const setLineSpeed = (nodeId: number, landingId: number, speed: number) =>
+// 线路级限速:整条线路(机器 × 落地)一个限速,上传下载各限这么多(MB/s),0=解除。
+// 直连线路没有落地:landingId 传 null(或 0),后端按「机器 × 直连」存。
+export const setLineSpeed = (nodeId: number, landingId: number | null, speed: number) =>
   Network.post("/inbound/line-speed", { nodeId, landingId, speed });
 export const getLineSpeeds = () => Network.post("/inbound/line-speeds");
-// 每条线路累计流量 + 建立时间(卡片上显示「N天用了X」)
+// 每条线路(直连/中转)累计流量 + 建立时间(卡片上显示「N天用了X」)
 export const getLineStats = () => Network.post("/inbound/line-stats");
 
 // 落地独立管理(「落地管理」页)。以前只能在搭中转时顺手建一条,建完就再也改不了 ——

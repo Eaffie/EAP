@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import { Card, CardBody } from "@heroui/card";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
@@ -14,24 +13,41 @@ import {
   getInboundList,
   createInbound,
   oneClickInbound,
-  deleteInboundsByNode,
+  deleteInbound,
   assignAllToUser,
   assignSelf,
   getNodeList,
   getAllUsers,
   getSpeedLimitList,
-  pushNodeConfig,
+  setLineSpeed,
+  getLineSpeeds,
+  getLineStats,
 } from "@/api";
 import { copyTextToClipboard } from "@/utils/clipboard";
 import { SNI_PRESETS, DEFAULT_SNI, cleanSni } from "@/config/sni";
 import { SubQr } from "@/components/sub-qr";
 import { getSubBase } from "@/utils/sub-base";
 
+/** 字节 → 人类可读(GB/TB) */
+function fmtUsed(bytes: number): string {
+  if (!bytes || bytes <= 0) return "0";
+  const gb = bytes / 1024 / 1024 / 1024;
+  if (gb >= 1024) return (gb / 1024).toFixed(2) + " TB";
+  if (gb >= 100) return gb.toFixed(0) + " GB";
+  return gb.toFixed(1) + " GB";
+}
+
+/** 建立到现在几天(不足一天算 1 天,时间未知返回空) */
+function daysSince(ts: number): string {
+  if (!ts || ts <= 0) return "";
+  const d = Math.floor((Date.now() - ts) / 86400000);
+  return Math.max(d, 1) + " 天";
+}
+
 /**
- * 直连线路(合体面板)· 机器卡模式。
- * 一台机器 = 一张卡(卡上折叠着这台机器的全套协议)。
- * 卡上「分配用户」→ 把这台机器所有协议一次分给车友 → 出一条订阅链接。
- * 车友加这一条订阅,机器上全部协议自动到手,以后加新协议自动更新。
+ * 直连线路 · 表格模式。
+ * 一条直连入站 = 一行(不再按机器合并),每行的按钮只作用于该行那条入站。
+ * 直连没有落地,所以不限速/用量都按「机器 × 直连」这条线路算。
  */
 export default function InboundPage() {
   const [inbounds, setInbounds] = useState<any[]>([]);
@@ -48,25 +64,41 @@ export default function InboundPage() {
   const [oneClickSni, setOneClickSni] = useState<string>(DEFAULT_SNI);
   const [oneClickLoading, setOneClickLoading] = useState(false);
 
-  // 机器卡「分配用户」:把整台机器的协议分给车友(只分配,链接去「用户管理」拿)
+  // 行内「分配用户」:只分配这一行那条入站(只分配,链接去「用户管理」拿)
   const [assignOpen, setAssignOpen] = useState(false);
-  const [assignForm, setAssignForm] = useState<any>({ nodeId: null, nodeName: "", protocolCount: 0, userId: null, speedId: null, expDate: null, flowGb: null });
+  const [assignForm, setAssignForm] = useState<any>({ nodeId: null, lineName: "", inboundIds: [], userId: null, speedId: null, expDate: null, flowGb: null });
   const [assignLoading, setAssignLoading] = useState(false);
 
+  // 线路级限速 / 用量:直连没有落地,key 统一用「机器id-落地id」(落地为空时是 "机器id-null")
+  const [lineSpeeds, setLineSpeeds] = useState<Record<string, number>>({});
+  const [lineStats, setLineStats] = useState<Record<string, { used: number; createdAt: number }>>({});
+
   // 「我自己用」:一键开给当前管理员自己,完事直接把订阅链接弹出来
-  const [selfLoading, setSelfLoading] = useState<number | null>(null);
-  const [pushing, setPushing] = useState<number | null>(null);
+  const [selfLoading, setSelfLoading] = useState<string | null>(null);
   const [selfSubUrl, setSelfSubUrl] = useState<string>("");
   const [selfOpen, setSelfOpen] = useState(false);
-  // 订阅链接的域名部分永远是【面板地址】,几台机器点出来长得几乎一样,
-  // 只有末尾 token 不同 —— 不写清楚是哪台机器,很容易以为"点第二台弹的还是第一台"
-  const [selfNodeName, setSelfNodeName] = useState<string>("");
+  // 订阅链接的域名部分永远是【面板地址】,每条线路点出来长得几乎一样,
+  // 只有末尾 token 不同 —— 不写清楚是哪条线路,很容易以为"点第二个弹的还是第一个"
+  const [selfLineName, setSelfLineName] = useState<string>("");
 
-  const handleAssignSelf = async (nodeId: number, nodeName?: string) => {
-    setSelfLoading(nodeId);
-    setSelfNodeName(nodeName || "");
+  // 线路级限速弹窗:直连线路的 landingId 恒为空
+  const [speedOpen, setSpeedOpen] = useState(false);
+  const [speedSaving, setSpeedSaving] = useState(false);
+  const [speedForm, setSpeedForm] = useState<any>({ nodeId: null, landingId: null, lineName: "", speed: 0 });
+
+  /** 线路 key:和后端「机器id + '-' + 落地id」一致(落地为空 → "null") */
+  const lineKey = (nodeId: any, landingId: any) => `${nodeId}-${landingId ?? null}`;
+
+  /** 这条入站属于哪台机器(机器删了就显示节点 id,别让整行消失) */
+  const nodeNameOf = (nodeId: number) => nodes.find((n) => n.id === nodeId)?.name || `机器#${nodeId}`;
+
+  const handleAssignSelf = async (ib: any) => {
+    const key = `${ib.nodeId}-${ib.id}`;
+    setSelfLoading(key);
+    setSelfLineName(`${nodeNameOf(ib.nodeId)} · ${protoLabel(ib.protocol)}`);
     try {
-      const res = await assignSelf({ nodeId });
+      // inboundIds = 只开这一条入站,不动这台机器上的其它协议
+      const res = await assignSelf({ nodeId: ib.nodeId, inboundIds: [ib.id] });
       if (res.code === 0 && res.data?.subToken) {
         // 设了「订阅地址(给车友的)」就用它开头,没设 = 网页地址(和以前一样)
         setSelfSubUrl(`${await getSubBase()}/api/v1/open_api/sub?token=${res.data.subToken}`);
@@ -96,6 +128,23 @@ export default function InboundPage() {
         setUsers(Array.isArray(d) ? d : (d && d.records ? d.records : []));
       }
       if (sp.code === 0) setSpeedRules(sp.data || []);
+      // 线路用量/限速:失败不影响主列表
+      getLineStats().then((r: any) => {
+        if (r.code === 0) {
+          const m: Record<string, { used: number; createdAt: number }> = {};
+          (r.data || []).forEach((x: any) => {
+            m[`${x.nodeId}-${x.landingId ?? null}`] = { used: x.used || 0, createdAt: x.createdAt || 0 };
+          });
+          setLineStats(m);
+        }
+      }).catch(() => {});
+      getLineSpeeds().then((r: any) => {
+        if (r.code === 0) {
+          const m: Record<string, number> = {};
+          (r.data || []).forEach((x: any) => { m[`${x.nodeId}-${x.landingId ?? null}`] = x.speed || 0; });
+          setLineSpeeds(m);
+        }
+      }).catch(() => {});
     } catch (e) {
       toast.error("加载失败");
     }
@@ -165,8 +214,16 @@ export default function InboundPage() {
     setOneClickLoading(false);
   };
 
-  const openNodeAssign = (n: any, count: number) => {
-    setAssignForm({ nodeId: n.id, nodeName: n.name, protocolCount: count, userId: null, speedId: null, expDate: null, flowGb: null });
+  const openRowAssign = (ib: any) => {
+    setAssignForm({
+      nodeId: ib.nodeId,
+      lineName: `${nodeNameOf(ib.nodeId)} · ${protoLabel(ib.protocol)}${ib.remark ? " · " + ib.remark : ""}`,
+      inboundIds: [ib.id],
+      userId: null,
+      speedId: null,
+      expDate: null,
+      flowGb: null,
+    });
     setAssignOpen(true);
   };
 
@@ -174,7 +231,8 @@ export default function InboundPage() {
     if (!assignForm.userId) return toast.error("请选择车友");
     setAssignLoading(true);
     try {
-      const payload: any = { userId: assignForm.userId, nodeId: assignForm.nodeId };
+      // inboundIds:只分配这一行那条入站(线路的配额/到期照常按「车友 × 机器 × 直连」记)
+      const payload: any = { userId: assignForm.userId, nodeId: assignForm.nodeId, inboundIds: assignForm.inboundIds };
       if (assignForm.speedId) payload.speedId = assignForm.speedId;
       // 到期直接选日期(当天 23:59:59 截止),比填"多少天"直观,续费也只是把日期往后改
       if (assignForm.expDate) payload.expTime = new Date(`${assignForm.expDate}T23:59:59`).getTime();
@@ -202,33 +260,53 @@ export default function InboundPage() {
     setAssignLoading(false);
   };
 
-  // 机器上的 sing-box 掉了(转发诊断报「所有TCP连接尝试都失败」)时用这个。
-  // 下发的是库里的全量,点几次都一样,不会把已有协议弄乱。
-  const handlePushConfig = async (nodeId: number, nodeName: string) => {
-    setPushing(nodeId);
-    const res = await pushNodeConfig(nodeId);
-    setPushing(null);
+  // 清空该条:只删这一行那条入站(连带它的转发、用户分配),不动同机器的其它协议
+  const handleClearOne = async (ib: any) => {
+    const label = `${nodeNameOf(ib.nodeId)} · ${protoLabel(ib.protocol)}${ib.remark ? " · " + ib.remark : ""}`;
+    if (!window.confirm(`确定清空「${label}」这一条直连协议?(连带其转发/用户;同机其它协议不受影响)`)) return;
+    const res = await deleteInbound(ib.id);
     if (res.code === 0) {
-      toast.success(`已把「${nodeName}」的协议配置重新下发一遍`);
-    } else {
-      // 这里的失败几乎都是节点掉线/超时,原样把后端的话给出来最有用
-      toast.error(res.msg || "下发失败");
-    }
-  };
-
-  const handleClearNode = async (nodeId: number, nodeName: string) => {
-    if (!window.confirm(`确定清空「${nodeName}」上的直连协议?(连带其转发/用户;中转协议不受影响)`)) return;
-    const res = await deleteInboundsByNode(nodeId, false);
-    if (res.code === 0) {
-      toast.success("已清空该机协议");
+      toast.success("已清空该条");
       loadAll();
     } else {
       toast.error(res.msg || "清空失败");
     }
   };
 
-  // 直连线路只管【直连】协议(landingId 为空);中转的协议在「中转」页管
-  const machineNodes = nodes.filter((n) => inbounds.some((ib) => ib.nodeId === n.id && !ib.landingId));
+  // ===== 线路级限速(直连线路 = 机器 × 直连) =====
+  const openSpeed = (ib: any) => {
+    setSpeedForm({
+      nodeId: ib.nodeId,
+      landingId: null,
+      lineName: `${nodeNameOf(ib.nodeId)} · ${protoLabel(ib.protocol)}${ib.remark ? " · " + ib.remark : ""}`,
+      speed: lineSpeeds[lineKey(ib.nodeId, ib.landingId)] || 0,
+    });
+    setSpeedOpen(true);
+  };
+
+  const handleSaveSpeed = async () => {
+    const sp = Number(speedForm.speed);
+    if (!Number.isFinite(sp) || sp < 0) return toast.error("填个不小于 0 的数字");
+    setSpeedSaving(true);
+    try {
+      // 直连没有落地:landingId 传 null,后端按「机器 × 直连」这条线路存
+      const res = await setLineSpeed(speedForm.nodeId, null, Math.round(sp));
+      if (res.code === 0) {
+        toast.success(sp > 0 ? `已把这条线路限速定为 ${sp} MB/s 并下发` : "已解除这条线路的限速");
+        setSpeedOpen(false);
+        loadAll();
+      } else {
+        toast.error(res.msg || "保存失败");
+      }
+    } catch (e) {
+      toast.error("保存失败");
+    }
+    setSpeedSaving(false);
+  };
+
+  // 直连线路只管【直连】协议(landingId 为空);中转的协议在「中转」页管。
+  // 一条直连入站 = 一行。
+  const directInbounds = inbounds.filter((ib) => !ib.landingId);
 
   return (
     <div className="p-4 space-y-4">
@@ -257,105 +335,105 @@ export default function InboundPage() {
         </div>
       </div>
 
-      {/* 一机一卡:每台机器的全套协议折叠成一条记录,卡上直接分配用户 */}
-      <div className="grid gap-3 md:grid-cols-2">
-        {machineNodes.map((n) => {
-          const nodeInbounds = inbounds.filter((ib) => ib.nodeId === n.id && !ib.landingId);
-          const online = n.status === 1;
-          const firstIp = n.ip ? String(n.ip).split(",")[0].trim() : (n.serverIp || "");
-          return (
-            <Card key={n.id}>
-              <CardBody className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <span className="text-lg font-semibold truncate">🖥️ {n.name}</span>
-                  <Chip size="sm" variant="flat" color={online ? "success" : "default"}>{online ? "在线" : "离线"}</Chip>
-                  <Chip size="sm" variant="flat" color="primary" className="ml-auto">{nodeInbounds.length} 协议</Chip>
-                </div>
-                {firstIp && <div className="text-xs text-default-500 font-mono">{firstIp}</div>}
-
-                {/* 节点在线 ≠ 协议可用:gost 和 sing-box 是两个服务,sing-box 挂了
-                    这里照样显示「在线」,但这台机上所有协议全都连不上。必须单独标出来 —— 
-                    不然只会以为是协议参数配错了,往那个方向查很久都查不出来 */}
-                {online && n.singboxRunning === false && nodeInbounds.length > 0 && (
-                  n.singboxInstalling ? (
-                    <div className="rounded-lg border border-default-300 bg-default-100 px-3 py-2 space-y-1">
-                      <div className="text-sm font-medium text-default-600">⏳ sing-box 正在安装,请稍候…</div>
-                      <div className="text-xs text-default-500">
-                        首次建协议时会现下 sing-box(约 57MB),一般 1-2 分钟。装好后这里自动恢复正常,不用管。
-                      </div>
-                    </div>
-                  ) : n.singboxInstallErr ? (
-                    <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 space-y-1">
-                      <div className="text-sm font-semibold text-danger">⚠️ sing-box 安装失败,这台机的协议全部不可用</div>
-                      <div className="text-xs text-default-500 break-all">
-                        节点报的原因:<code className="font-mono">{n.singboxInstallErr}</code>
-                      </div>
-                      <div className="text-xs text-default-500">
-                        多半是这台机下载 GitHub 失败。国内机器改用镜像版命令重跑节点安装脚本(见 README)。
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 space-y-1">
-                      <div className="text-sm font-semibold text-danger">⚠️ sing-box 未运行,这台机的协议全部不可用</div>
-                      {n.singboxInstalled === false ? (
-                        <div className="text-xs text-default-500">
-                          这台机上<span className="text-danger font-medium">根本没装 sing-box</span> —— 装节点时从 GitHub
-                          下载失败了(国内机常见)。到这台机上重跑一次节点安装脚本即可,装好后面板会自动把协议配置推下去,
-                          不用重新分配。
-                        </div>
-                      ) : (
-                        <div className="text-xs text-default-500">
-                          节点本身在线(gost 正常),但跑协议的 sing-box 没起来。到这台机上执行:
-                          <code className="font-mono bg-default-200 px-1 rounded ml-1">systemctl enable --now sing-box</code>
-                          <div className="mt-1">
-                            若报 <code className="font-mono">Unit file sing-box.service does not exist</code>,说明根本没装上
-                            (下载 GitHub 失败),重跑一次节点安装脚本即可。
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )
-                )}
-                <div className="flex flex-wrap gap-1">
-                  {nodeInbounds.map((ib) => (
-                    <Chip key={ib.id} size="sm" variant="flat" color="secondary">{protoLabel(ib.protocol)}</Chip>
-                  ))}
-                </div>
-                <div className="text-xs text-default-400">
-                  整机一条订阅:分配给车友后,一条订阅链接导入客户端即拿到上面全部协议,以后加新协议自动更新。
-                </div>
-                <div className="flex gap-2">
-                  <Button size="sm" color="primary" className="flex-1" onPress={() => openNodeAssign(n, nodeInbounds.length)}>
-                    👤 分配用户
-                  </Button>
-                  {/* 自己用不必先建车友再分配:一键开给当前管理员,不限速不限量不到期 */}
-                  <Button
-                    size="sm"
-                    color="success"
-                    variant="flat"
-                    isLoading={selfLoading === n.id}
-                    onPress={() => handleAssignSelf(n.id, n.name)}
-                  >
-                    🔑 我自己用
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="flat"
-                    isLoading={pushing === n.id}
-                    onPress={() => handlePushConfig(n.id, n.name)}
-                  >
-                    🔄 重推配置
-                  </Button>
-                  <Button size="sm" color="danger" variant="flat" onPress={() => handleClearNode(n.id, n.name)}>
-                    清空该机
-                  </Button>
-                </div>
-              </CardBody>
-            </Card>
-          );
-        })}
+      <div className="text-xs text-default-500">
+        直连 = 协议在本机直接出网,一条入站一行。「分配用户」「我自己用」「清空该条」都只作用于当前这一行那条入站。
       </div>
-      {machineNodes.length === 0 && (
+
+      {/* 真表格:浏览器原生按列对齐,列宽自动取该列最宽内容 */}
+      {directInbounds.length > 0 && (
+        <div className="rounded-xl border border-default-200 overflow-x-auto">
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr className="bg-default-100 text-xs text-default-600">
+                <th className="text-left font-medium px-3 py-2 whitespace-nowrap">中转机</th>
+                <th className="text-left font-medium px-3 py-2 whitespace-nowrap">协议</th>
+                <th className="text-left font-medium px-3 py-2 whitespace-nowrap">备注</th>
+                <th className="text-right font-medium px-3 py-2 whitespace-nowrap">已用流量</th>
+                <th className="text-right font-medium px-3 py-2 whitespace-nowrap">已用天数</th>
+                <th className="text-left font-medium px-3 py-2 whitespace-nowrap">限速</th>
+                <th className="text-right font-medium px-3 py-2 whitespace-nowrap">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {directInbounds.map((ib, idx) => {
+                const n = nodes.find((x) => x.id === ib.nodeId);
+                const online = n?.status === 1;
+                // 直连没有落地:限速/用量按「机器 × 直连」这条线路取,和后端的分组口径一致
+                const st = lineStats[lineKey(ib.nodeId, ib.landingId)];
+                const sp = lineSpeeds[lineKey(ib.nodeId, ib.landingId)] || 0;
+                return (
+                  <tr
+                    key={ib.id}
+                    className={"border-t border-default-100 " + (idx % 2 === 1 ? "bg-default-50" : "")}
+                  >
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      <span className="flex items-center gap-2">
+                        <span className="font-semibold">🖥️ {nodeNameOf(ib.nodeId)}</span>
+                        <Chip size="sm" variant="flat" color={online ? "success" : "default"}>{online ? "在线" : "离线"}</Chip>
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      <Chip size="sm" variant="flat" color="secondary">{protoLabel(ib.protocol)}</Chip>
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap text-xs text-default-600">{ib.remark || "-"}</td>
+                    <td className="px-3 py-2 whitespace-nowrap text-right text-xs tabular-nums">
+                      {fmtUsed(st?.used || 0)}
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap text-right text-xs tabular-nums text-default-500">
+                      {st?.createdAt ? daysSince(st.createdAt) : "-"}
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      <Button
+                        size="sm"
+                        variant="flat"
+                        color={sp > 0 ? "warning" : "default"}
+                        className="min-w-0 h-7 px-2 text-xs"
+                        onPress={() => openSpeed(ib)}
+                      >
+                        {sp > 0 ? `${sp} MB/s` : "不限速"}
+                      </Button>
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      <span className="flex items-center justify-end gap-1">
+                        <Button
+                          size="sm"
+                          color="primary"
+                          className="min-w-0 h-7 px-2 text-xs"
+                          onPress={() => openRowAssign(ib)}
+                        >
+                          👤 分配用户
+                        </Button>
+                        {/* 自己用不必先建车友再分配:一键开给当前管理员,不限速不限量不到期 */}
+                        <Button
+                          size="sm"
+                          color="success"
+                          variant="flat"
+                          className="min-w-0 h-7 px-2 text-xs"
+                          isLoading={selfLoading === `${ib.nodeId}-${ib.id}`}
+                          onPress={() => handleAssignSelf(ib)}
+                        >
+                          🔑 我自己用
+                        </Button>
+                        <Button
+                          size="sm"
+                          color="danger"
+                          variant="flat"
+                          className="min-w-0 h-7 px-2 text-xs"
+                          onPress={() => handleClearOne(ib)}
+                        >
+                          清空该条
+                        </Button>
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {directInbounds.length === 0 && (
         <div className="text-center text-default-400 py-8">还没有协议,点右上角「⚡ 一键搭建整机协议」在某台机器上把全套协议建出来</div>
       )}
 
@@ -364,9 +442,9 @@ export default function InboundPage() {
         <ModalContent>
           <ModalHeader className="flex flex-col gap-1">
             <span>🔑 已开给你自己(不限速 · 不限流量 · 不限到期)</span>
-            {selfNodeName && (
+            {selfLineName && (
               <span className="text-sm font-normal text-default-500">
-                机器:<b className="text-foreground">{selfNodeName}</b>
+                线路:<b className="text-foreground">{selfLineName}</b>
               </span>
             )}
           </ModalHeader>
@@ -375,8 +453,8 @@ export default function InboundPage() {
               这条订阅是给你自己用的,复制到 v2rayN / 小火箭 里就能用。以后随时在「我的订阅」页也能找到。
             </div>
             <div className="text-xs text-default-400 bg-default-100 rounded-lg px-3 py-2">
-              💡 链接前半段是<b>面板地址</b>,所以每台机器点出来都一样 —— 真正区分线路的是末尾的
-              <b> token</b>。拉下来的节点才是这台机器的。
+              💡 链接前半段是<b>面板地址</b>,所以每条线路点出来都一样 —— 真正区分线路的是末尾的
+              <b> token</b>。拉下来的节点才是这条线路的。
             </div>
             <Input
               readOnly
@@ -401,13 +479,13 @@ export default function InboundPage() {
         </ModalContent>
       </Modal>
 
-      {/* 机器卡「分配用户」:整机协议一次分给车友,出一条订阅链接 */}
+      {/* 行内「分配用户」:只分配这一行那条入站,出一条订阅链接 */}
       <Modal isOpen={assignOpen} onClose={() => setAssignOpen(false)}>
         <ModalContent>
-          <ModalHeader>👤 给车友分配「{assignForm.nodeName}」</ModalHeader>
+          <ModalHeader>👤 给车友分配「{assignForm.lineName}」</ModalHeader>
           <ModalBody className="space-y-3">
             <div className="text-sm text-default-500">
-              把这台机器上的 <b>{assignForm.protocolCount} 个协议</b> 一次分给车友。分配完到「用户管理」页,点该车友的「🔗 订阅链接」拿链接发给他。
+              只把 <b>{assignForm.lineName}</b> 这 1 条协议分给车友。分配完到「用户管理」页,点该车友的「🔗 订阅链接」拿链接发给他。
             </div>
             <Select
               label="子账号(车友)"
@@ -451,13 +529,40 @@ export default function InboundPage() {
         </ModalContent>
       </Modal>
 
+      {/* 线路级限速:整条直连线路(机器)一个上限,不按车友分 */}
+      <Modal isOpen={speedOpen} onClose={() => setSpeedOpen(false)}>
+        <ModalContent>
+          <ModalHeader>⚡ 线路限速「{speedForm.lineName}」</ModalHeader>
+          <ModalBody className="space-y-3">
+            <div className="text-xs text-default-500">
+              这台机器的<b>直连线路</b>共享这个上限,<b>不按车友分</b>:该线路所有客户加起来跑不超过它。
+              <br />上传和下载<b>各限这么多</b>,单位是 <b>MB/s</b>(1 MB/s ≈ 8 Mbps)。
+            </div>
+            <Input
+              type="number"
+              label="限速(MB/s)"
+              value={String(speedForm.speed ?? 0)}
+              onChange={(e) => setSpeedForm({ ...speedForm, speed: e.target.value === "" ? 0 : Number(e.target.value) })}
+              description="填 0 = 解除限速。参考:5 ≈ 40Mbps,10 ≈ 80Mbps"
+            />
+            <div className="text-xs text-default-400">
+              保存后会立即下发到这台机器;节点离线时只存配置,等它上线再推。
+            </div>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="light" onPress={() => setSpeedOpen(false)}>取消</Button>
+            <Button color="warning" isLoading={speedSaving} onPress={handleSaveSpeed}>保存并下发</Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+
       {/* 一键搭建整机协议:选机器,把所有支持的协议一键全建出来 */}
       <Modal isOpen={oneClickOpen} onClose={() => setOneClickOpen(false)}>
         <ModalContent>
           <ModalHeader>⚡ 一键搭建整机协议</ModalHeader>
           <ModalBody className="space-y-3">
             <div className="text-sm text-default-500">
-              在选中的机器上一键建好全部协议:<b>VLESS-Reality、Trojan-Reality、VMess、Hysteria2、TUIC、AnyTLS</b>(端口、密钥、自签证书全自动;端口被占自动上移)。建好后就是一张机器卡,点「分配用户」出订阅即可。
+              在选中的机器上一键建好全部协议:<b>VLESS-Reality、Trojan-Reality、VMess、Hysteria2、TUIC、AnyTLS</b>(端口、密钥、自签证书全自动;端口被占自动上移)。建好后列表里一条协议一行,点该行的「分配用户」出订阅即可。
             </div>
             <Select
               label="机器"
