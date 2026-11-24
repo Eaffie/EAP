@@ -16,7 +16,6 @@ import java.util.Map;
  * 落地(中转出口)前端控制器。粘贴分享链接建落地,可复用分给多台前置机。
  * </p>
  *
- * @author QAQ
  * @since 2026-07-23
  */
 @RestController

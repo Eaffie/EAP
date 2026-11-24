@@ -46,7 +46,6 @@ import java.util.UUID;
  * 协议入站服务实现(合体面板:协议 + 限速)。
  * 架构:客户端 → gost(公网口:限速/流量/到期) → 127.0.0.1:sing-box入站(协议) → 外网。
  *
- * @author QAQ
  * @since 2026-07-19
  */
 @Service

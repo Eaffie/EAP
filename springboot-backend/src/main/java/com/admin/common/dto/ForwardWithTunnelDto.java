@@ -7,7 +7,6 @@ import lombok.Data;
  * 转发信息及关联隧道信息DTO
  * </p>
  *
- * @author QAQ
  * @since 2025-06-03
  */
 @Data

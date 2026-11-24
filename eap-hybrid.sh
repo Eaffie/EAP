@@ -114,8 +114,8 @@ export EAP_DIR="$PANEL_DIR"
 exec bash /usr/local/bin/eap-hybrid.sh "\${1:-menu}"
 EOF
   chmod +x /usr/local/bin/eap
-  # 清掉改名前失效的 flux 命令(它里面写死的是旧面板目录)
-  rm -f /usr/local/bin/flux /usr/local/bin/flux-panel.sh 2>/dev/null
+  # 清掉改名前失效的 EAP 命令(它里面写死的是旧面板目录)
+  rm -f /usr/local/bin/EAP /usr/local/bin/EAP-panel.sh 2>/dev/null
   echo "✅ 装好了:以后在任何位置输入  eap  即可管理面板"
   echo "   面板目录已记住: $PANEL_DIR"
 }

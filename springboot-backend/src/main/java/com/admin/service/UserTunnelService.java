@@ -12,7 +12,6 @@ import com.baomidou.mybatisplus.extension.service.IService;
  * 用户隧道权限服务类
  * </p>
  *
- * @author QAQ
  * @since 2025-06-03
  */
 public interface UserTunnelService extends IService<UserTunnel> {

@@ -1,50 +1,28 @@
-# Vite & HeroUI Template
+# EAP 前端
 
-This is a template for creating applications using Vite and HeroUI (v2).
+EAP 面板的 Web 界面。Vite + React + TypeScript + HeroUI。
 
-[Try it on CodeSandbox](https://githubbox.com/frontio-ai/vite-template)
-
-## Technologies Used
-
-- [Vite](https://vitejs.dev/guide/)
-- [HeroUI](https://heroui.com)
-- [Tailwind CSS](https://tailwindcss.com)
-- [Tailwind Variants](https://tailwind-variants.org)
-- [TypeScript](https://www.typescriptlang.org)
-- [Framer Motion](https://www.framer.com/motion)
-
-## How to Use
-
-To clone the project, run the following command:
-
-```bash
-git clone https://github.com/frontio-ai/vite-template.git
-```
-
-### Install dependencies
-
-You can use one of them `npm`, `yarn`, `pnpm`, `bun`, Example using `npm`:
+## 开发
 
 ```bash
 npm install
-```
-
-### Run the development server
-
-```bash
 npm run dev
 ```
 
-### Setup pnpm (optional)
-
-If you are using `pnpm`, you need to add the following code to your `.npmrc` file:
+## 构建
 
 ```bash
-public-hoist-pattern[]=*@heroui/*
+npm run build      # tsc + vite build，产物在 dist/
 ```
 
-After modifying the `.npmrc` file, you need to run `pnpm install` again to ensure that the dependencies are installed correctly.
+## 目录
 
-## License
-
-Licensed under the [MIT license](https://github.com/frontio-ai/vite-template/blob/main/LICENSE).
+```
+src/
+  api/          接口封装
+  components/   通用组件
+  config/       站点配置、SNI 预置
+  layouts/      管理端 / H5 布局
+  pages/        各功能页（仪表板、中转落地、用户、限速…）
+  utils/        工具
+```

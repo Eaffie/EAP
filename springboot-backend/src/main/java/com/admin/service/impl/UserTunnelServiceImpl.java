@@ -41,7 +41,6 @@ import java.util.Map;
  * 支持流量限制、数量限制、过期时间和限速规则的管理
  * </p>
  *
- * @author QAQ
  * @since 2025-06-03
  */
 @Service

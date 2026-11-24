@@ -13,7 +13,6 @@ import java.io.Serializable;
  * 
  * </p>
  *
- * @author QAQ
  * @since 2025-06-04
  */
 @Data

@@ -12,7 +12,6 @@ import java.io.Serializable;
  * listen 一律 127.0.0.1,公网口由 gost 转发占用并限速。
  * </p>
  *
- * @author QAQ
  * @since 2026-07-19
  */
 @Data

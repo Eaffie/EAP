@@ -11,7 +11,6 @@ import java.util.List;
 /**
  * 协议入站服务(合体面板:协议搭建 + 限速)。
  *
- * @author QAQ
  * @since 2026-07-19
  */
 public interface InboundService extends IService<Inbound> {

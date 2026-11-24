@@ -12,7 +12,6 @@ import java.io.Serializable;
  * 一条落地可分给多台前置机复用;inbound.landing_id 指向它 → 该入站流量经此落地出网。
  * </p>
  *
- * @author QAQ
  * @since 2026-07-23
  */
 @Data

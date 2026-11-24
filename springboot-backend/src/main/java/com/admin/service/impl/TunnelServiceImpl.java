@@ -39,7 +39,6 @@ import java.util.stream.Collectors;
  * 支持端口转发和隧道转发两种模式
  * </p>
  *
- * @author QAQ
  * @since 2025-06-03
  */
 @Service

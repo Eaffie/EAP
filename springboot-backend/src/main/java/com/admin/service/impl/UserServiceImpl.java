@@ -38,7 +38,6 @@ import java.util.Objects;
  * 支持用户关联数据的级联删除，包括转发和Gost服务的清理
  * </p>
  *
- * @author QAQ
  * @since 2025-06-03
  */
 @Slf4j

@@ -35,7 +35,6 @@ import org.springframework.beans.factory.annotation.Value;
  * 提供节点的增删改查功能，包括节点创建、更新、删除和查询操作
  * </p>
  *
- * @author QAQ
  * @since 2025-06-03
  */
 @Service

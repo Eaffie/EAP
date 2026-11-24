@@ -35,7 +35,6 @@ import java.util.UUID;
  * 支持限速器的创建、更新、删除和查询操作
  * </p>
  *
- * @author QAQ
  * @since 2025-06-04
  */
 @Service

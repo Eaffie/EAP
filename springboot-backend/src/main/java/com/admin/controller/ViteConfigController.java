@@ -18,7 +18,6 @@ import java.util.Set;
  *  网站配置控制器
  * </p>
  *
- * @author QAQ
  * @since 2025-07-24
  */
 @RestController

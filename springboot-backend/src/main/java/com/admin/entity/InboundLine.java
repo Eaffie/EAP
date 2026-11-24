@@ -14,7 +14,6 @@ import java.io.Serializable;
  * 已用流量不存这里,实时汇总该线路各协议对应转发的 in_flow+out_flow。
  * </p>
  *
- * @author QAQ
  * @since 2026-07-26
  */
 @Data

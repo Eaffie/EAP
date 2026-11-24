@@ -17,7 +17,6 @@ import java.util.Map;
  * 协议入站前端控制器(合体面板:协议 + 限速)
  * </p>
  *
- * @author QAQ
  * @since 2026-07-19
  */
 @RestController

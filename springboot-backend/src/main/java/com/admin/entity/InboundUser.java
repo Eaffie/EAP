@@ -13,7 +13,6 @@ import java.io.Serializable;
  * 客户端最终连的是那条 forward 的公网端口(被限速),落地到本入站。
  * </p>
  *
- * @author QAQ
  * @since 2026-07-19
  */
 @Data

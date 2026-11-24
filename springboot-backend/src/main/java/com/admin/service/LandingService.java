@@ -8,7 +8,6 @@ import com.baomidou.mybatisplus.extension.service.IService;
 /**
  * 落地(中转出口)服务:粘贴分享链接建落地,可复用分给多台前置机。
  *
- * @author QAQ
  * @since 2026-07-23
  */
 public interface LandingService extends IService<Landing> {
