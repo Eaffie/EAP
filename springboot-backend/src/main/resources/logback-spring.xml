@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+
+
+<configuration scan="true" scanPeriod="60 seconds" debug="false">
+    <contextName>logback</contextName>
+    <springProperty scope="context" name="logDir" source="log-dir" defaultValue="logs" />
+    <property name="FILE_PATH" value="${logDir}/%d{yyyy-MM-dd}.log" />
+
+
+    <!--输出到控制台-->
+    <appender name="console" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!--按天生成日志,即一天只生成一个文件夹和一个日志文件-->
+    <appender name="logFile" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <Prudent>true</Prudent>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <FileNamePattern>${FILE_PATH}</FileNamePattern>
+            <!-- 保留 7 天 + 总量 1GB 封顶(以前 30 天且不封顶,面板机一个月涨了十几 GB)。
+                 文件名仍是 yyyy-MM-dd.log;不用 SizeAndTime(要加 %i 改文件名,老文件就没人清了)。
+                 cleanHistoryOnStart:重启时清超期日志。注意 logback 1.2 一次最多往回看 32 天(maxHistory 之外):
+                 40 天以前的孤儿日志它清不到 —— 用 `eap clean-logs`(按修改时间,不受这个限制)。
+                 totalSizeCap 会把当天正在写的文件也算进去:某一天单日超过 1GB 时,重启会连当天一起清(日志照常继续写)。 -->
+            <maxHistory>7</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+            <cleanHistoryOnStart>true</cleanHistoryOnStart>
+        </rollingPolicy>
+        <layout class="ch.qos.logback.classic.PatternLayout">
+            <Pattern>
+                %d{yyyy-MM-dd HH:mm:ss} ^ %-5level ^ %logger{36} ^ %msg%n
+            </Pattern>
+        </layout>
+    </appender>
+
+    <!-- logger节点，可选节点，作用是指明具体的包或类的日志输出级别，
+    以及要使用的<appender>（可以把<appender>理解为一个日志模板）。
+    addtivity：非必写属性，是否向上级loger传递打印信息。默认是true-->
+    <logger name="com.framework.job" additivity="false">
+        <appender-ref ref="console"/>
+        <appender-ref ref="logFile"/>
+    </logger>
+
+
+    <!--项目的整体的日志打印级别为info-->
+    <root level="info">
+        <appender-ref ref="console"/>
+        <appender-ref ref="logFile"/>
+    </root>
+
+</configuration>
+
