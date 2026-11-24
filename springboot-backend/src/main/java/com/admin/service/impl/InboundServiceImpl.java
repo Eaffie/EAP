@@ -939,7 +939,8 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             // 两种订阅里同一个节点应该叫同一个名字,不然车友对不上。
             SubNames.UserNames names = namesByUser.computeIfAbsent(iu.getUserId(), nodeNameStore::load);
             String ln = (aggUser != null && lid != null) ? landingNameCached(lid, landingNames) : null;
-            String remark = SubNames.resolve(in.getProtocol(), in.getRemark(), node.getName(), ln,
+            String clashBase = (aggUser == null) ? lineDisplayBase(in, landingNames) : in.getRemark();
+            String remark = SubNames.resolve(in.getProtocol(), clashBase, node.getName(), ln,
                     lid != null, aggUser != null, names.line(in.getNodeId(), lid), names.inbound(in.getId())).text;
 
             addClashProxies(proxies, usedNames, in, iu, node, forward, remark,
@@ -1066,9 +1067,22 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
     /** 按协议为某个入站用户拼客户端链接(assignUser 与订阅共用) */
     private String buildClientLink(Inbound in, InboundUser iu, Node node, Forward forward) {
-        // 分配接口回给管理员的那条链接:不带车友名字,和以前一样
-        return buildClientLink(in, iu, node, forward, SubNames.resolve(in.getProtocol(), in.getRemark(),
+        // 分配接口回给管理员的那条链接:不带车友名字,和以前一样;
+        // 但中转线路默认用落地名当节点名(否则客户端里全是「VLESS」分不清是哪条)
+        return buildClientLink(in, iu, node, forward, SubNames.resolve(in.getProtocol(),
+                lineDisplayBase(in, new java.util.HashMap<>()),
                 null, null, in.getLandingId() != null, false, null, null));
+    }
+
+    /**
+     * 单条线路(非聚合)在客户端里显示的默认名字:中转 → 落地名;直连 → 入站 remark(可能为空)。
+     * 这样客户在 v2rayN 里看到的别名就是「美国2」而不是干巴巴的「VLESS」。
+     */
+    private String lineDisplayBase(Inbound in, java.util.Map<Long, String> cache) {
+        if (in.getLandingId() != null) {
+            return landingNameCached(in.getLandingId(), cache);
+        }
+        return in.getRemark();
     }
 
     /** 落地名(聚合订阅前缀 / 节点名弹窗用);落地记录没了显示「落地#id」,和以前一致 */
@@ -1242,6 +1256,8 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         java.util.Map<String, Boolean> lineStopped = new HashMap<>();
         java.util.Map<Long, SubNames.UserNames> namesByUser = new HashMap<>();
         java.util.Map<Integer, java.util.Optional<Tunnel>> tunnelCache = new HashMap<>();
+        // 单条线路要把「落地名」当节点名,落地名查询结果缓存一下(同一条线路多条协议只查一次)
+        java.util.Map<Long, String> landingNames = new HashMap<>();
         for (InboundUser iu : ius) {
             if (iu.getStatus() != null && iu.getStatus() == 0) {
                 continue;
@@ -1271,7 +1287,8 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             }
             // 单条线路订阅不带「机器→落地」前缀;车友名字(线路别名 / 协议名)照样生效(三月拍板 1)
             SubNames.UserNames names = namesByUser.computeIfAbsent(iu.getUserId(), nodeNameStore::load);
-            addSubLinks(links, in, iu, node, forward, SubNames.resolve(in.getProtocol(), in.getRemark(),
+            addSubLinks(links, in, iu, node, forward, SubNames.resolve(in.getProtocol(),
+                    lineDisplayBase(in, landingNames),
                     node.getName(), null, lid != null, false, names.line(in.getNodeId(), lid), names.inbound(in.getId())),
                     subTunnel(node, forward, tunnelCache));
         }
