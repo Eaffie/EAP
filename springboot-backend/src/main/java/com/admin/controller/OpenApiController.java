@@ -26,7 +26,8 @@ public class OpenApiController extends BaseController {
 
     /** 订阅:按 token 返回该用户所有协议链接的 base64(客户端订阅用,免登录) */
     @GetMapping("/sub")
-    public String sub(@RequestParam("token") String token) {
+    public String sub(@RequestParam("token") String token, HttpServletResponse response) {
+        setProfileTitle(response, inboundService.subscriptionTitle(token));
         return inboundService.buildSubscription(token);
     }
 
@@ -36,7 +37,8 @@ public class OpenApiController extends BaseController {
      * 3x-ui 和 s-ui 也都是独立路径。
      */
     @GetMapping(value = "/clash", produces = "text/yaml; charset=utf-8")
-    public String clash(@RequestParam("token") String token) {
+    public String clash(@RequestParam("token") String token, HttpServletResponse response) {
+        setProfileTitle(response, inboundService.subscriptionTitle(token));
         return inboundService.buildClashSubscription(token);
     }
 
@@ -98,6 +100,23 @@ public class OpenApiController extends BaseController {
     }
 
 
+
+    /**
+     * 告诉客户端「这个订阅叫什么」。v2rayN / Mihomo / Clash Verge 都认 profile-title;
+     * 中文必须 base64,HTTP 头不是 UTF-8 安全的。
+     */
+    private void setProfileTitle(HttpServletResponse response, String title) {
+        if (response == null || title == null || title.isEmpty()) {
+            return;
+        }
+        try {
+            response.setHeader("profile-title",
+                    "base64:" + java.util.Base64.getEncoder()
+                            .encodeToString(title.getBytes("UTF-8")));
+        } catch (Exception ignore) {
+            // 起名失败不影响订阅内容
+        }
+    }
 
     private String buildSubscriptionHeader(long upload, long download, long total, long expire) {
         return String.format("upload=%d; download=%d; total=%d; expire=%d", download, upload, total, expire);

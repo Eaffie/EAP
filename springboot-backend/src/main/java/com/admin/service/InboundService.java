@@ -72,6 +72,13 @@ public interface InboundService extends IService<Inbound> {
     /** 按订阅 token 生成该用户所有协议链接的 base64 订阅内容(客户端订阅用) */
     String buildSubscription(String token);
 
+    /**
+     * 订阅在客户端里显示的名字(profile-title 响应头)。
+     * 单条线路 = 落地名(和节点名一致);聚合订阅 = 车友名 + 全部。
+     * 返回 null 表示不设置,客户端自己起名。
+     */
+    String subscriptionTitle(String token);
+
     /** 取某用户的订阅 token(兼容旧接口;订阅现在按线路,推荐 getUserLines) */
     String getUserSubToken(Long userId);
 

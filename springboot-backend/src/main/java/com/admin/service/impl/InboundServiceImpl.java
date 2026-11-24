@@ -1238,6 +1238,31 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
     }
 
     @Override
+    public String subscriptionTitle(String token) {
+        if (token == null || token.isEmpty()) {
+            return null;
+        }
+        // 聚合订阅(一个车友所有线路):用「车友名 全部」
+        User aggUser = userMapper.selectOne(
+                new QueryWrapper<User>().eq("all_sub_token", token).last("limit 1"));
+        if (aggUser != null) {
+            return aggUser.getUser() == null ? "全部线路" : aggUser.getUser() + " 全部";
+        }
+        // 单条线路订阅:名字跟节点名完全一致(中转 = 落地名,直连 = 入站备注)
+        List<InboundUser> ius = inboundUserMapper.selectList(
+                new QueryWrapper<InboundUser>().eq("sub_token", token).last("limit 1"));
+        if (ius.isEmpty()) {
+            return null;
+        }
+        Inbound in = this.getById(ius.get(0).getInboundId());
+        if (in == null) {
+            return null;
+        }
+        String base = lineDisplayBase(in, new java.util.HashMap<>());
+        return (base == null || base.isEmpty()) ? null : base;
+    }
+
+    @Override
     public String buildSubscription(String token) {
         if (token == null || token.isEmpty()) {
             return "";
