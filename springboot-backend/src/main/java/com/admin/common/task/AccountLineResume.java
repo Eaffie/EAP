@@ -144,7 +144,7 @@ public class AccountLineResume {
             }
             Map<String, InboundLine> lines = new HashMap<>();
             for (InboundLine l : inboundLineMapper.selectList(new QueryWrapper<InboundLine>().eq("user_id", userId))) {
-                lines.put(key(l.getNodeId(), l.getLandingId()), l);
+                lines.put(key(l.getNodeId(), l.getLandingId(), l.getInboundId()), l);
             }
 
             int resumed = 0;
@@ -224,7 +224,7 @@ public class AccountLineResume {
             Map<String, List<Forward>> byLine = lineForwards(userId);
             int resumed = 0;
             for (InboundLine line : inboundLineMapper.selectBatchIds(lineIds)) {
-                List<Forward> fs = byLine.get(key(line.getNodeId(), line.getLandingId()));
+                List<Forward> fs = byLine.get(key(line.getNodeId(), line.getLandingId(), line.getInboundId()));
                 if (fs == null) {
                     continue;
                 }
@@ -293,7 +293,7 @@ public class AccountLineResume {
                 || msg.contains("节点不存在") || msg.contains("not found") || msg.contains("找不到这条转发的服务");
     }
 
-    /** 这个车友每条线路(机器 × 落地)下的协议转发,key 见 key() */
+    /** 这个车友每条线路下的协议转发。中转 = 机器 × 落地;直连 = 机器 × 入站(见 key) */
     public Map<String, List<Forward>> lineForwards(Long userId) {
         Map<String, List<Long>> ids = new LinkedHashMap<>();
         Map<Long, Inbound> cache = new HashMap<>();
@@ -310,7 +310,9 @@ public class AccountLineResume {
                 }
                 cache.put(iu.getInboundId(), in);
             }
-            ids.computeIfAbsent(key(in.getNodeId(), in.getLandingId()), k -> new ArrayList<>()).add(iu.getGostForwardId());
+            Long lid = in.getLandingId();
+            String lk = key(in.getNodeId(), lid, lid == null ? in.getId() : null);
+            ids.computeIfAbsent(lk, k -> new ArrayList<>()).add(iu.getGostForwardId());
         }
         Map<String, List<Forward>> out = new LinkedHashMap<>();
         for (Map.Entry<String, List<Long>> e : ids.entrySet()) {
@@ -320,8 +322,15 @@ public class AccountLineResume {
         return out;
     }
 
-    public static String key(Long nodeId, Long landingId) {
-        return nodeId + "/" + (landingId == null ? "-" : landingId);
+    /**
+     * 线路的键。中转(landingId 非空)还是「机器/落地」——和升级前逐字节一致;
+     * 直连按入站:「机器/-入站id」(老数据 inboundId 为空时是「机器/-」,和以前一样)。
+     */
+    public static String key(Long nodeId, Long landingId, Long inboundId) {
+        if (landingId != null) {
+            return nodeId + "/" + landingId;
+        }
+        return nodeId + "/-" + (inboundId == null ? "" : inboundId);
     }
 
     public static long usedBytes(List<Forward> fs) {

@@ -88,6 +88,10 @@ export default function RelayPage() {
   // 线路用量:key = nodeId-landingId → { used(字节), createdAt(ms) }
   const [lineStats, setLineStats] = useState<Record<string, { used: number; createdAt: number }>>({});
 
+  // 分组折叠状态:key = 中转机 id,默认全部收起(页面上一眼看到每台机器几条线 + 累计流量)
+  const [expandedNodes, setExpandedNodes] = useState<Record<number, boolean>>({});
+  const toggleNode = (id: number) => setExpandedNodes((p) => ({ ...p, [id]: !p[id] }));
+
   const [buildOpen, setBuildOpen] = useState(false);
   const [buildForm, setBuildForm] = useState<any>({ nodeId: null, name: "", link: "", sni: DEFAULT_SNI, protocols: ["vless"] });
   const [buildLoading, setBuildLoading] = useState(false);
@@ -340,7 +344,8 @@ export default function RelayPage() {
     if (!Number.isFinite(sp) || sp < 0) return toast.error("填个不小于 0 的数字");
     setSpeedSaving(true);
     try {
-      const res = await setLineSpeed(speedForm.nodeId, speedForm.landingId, Math.round(sp));
+      // 中转没有入站维度:一条中转 = 该落地下全部协议一条线路,inboundId 恒传 null
+      const res = await setLineSpeed(speedForm.nodeId, speedForm.landingId, null, Math.round(sp));
       if (res.code === 0) {
         toast.success(sp > 0 ? `已把整条线路限速定为 ${sp} MB/s 并下发` : "已解除这条线路的限速");
         setSpeedOpen(false);
@@ -451,15 +456,23 @@ export default function RelayPage() {
     setRowTesting(null);
   };
 
-  // 中转线路 = 每(前置机 × 落地)一条卡
-  const relayLines: any[] = [];
+  // 中转线路 = 每(前置机 × 落地)一条,再按【中转机】分组:一台机器一块,默认折叠,
+  // 展开后还是原来那 7 列(中转机/协议/备注/已用流量/已用天数/限速/操作)。
+  const relayGroups: { node: any; lines: { landingId: any; inbounds: any[] }[] }[] = [];
   nodes.forEach((n) => {
     const relayIbs = inbounds.filter((ib) => ib.nodeId === n.id && ib.landingId);
     const lids = Array.from(new Set(relayIbs.map((ib) => ib.landingId)));
-    lids.forEach((lid) => {
-      relayLines.push({ node: n, landingId: lid, inbounds: relayIbs.filter((ib) => ib.landingId === lid) });
+    if (!lids.length) {
+      return;
+    }
+    relayGroups.push({
+      node: n,
+      lines: lids.map((lid) => ({ landingId: lid, inbounds: relayIbs.filter((ib) => ib.landingId === lid) })),
     });
   });
+  // 这台机器的中转累计流量 = 它每条线(机器 × 落地)的已用之和
+  const groupUsed = (nodeId: any, lines: { landingId: any }[]) =>
+    lines.reduce((s, ln) => s + (lineStats[`${nodeId}-${ln.landingId}`]?.used || 0), 0);
 
   // 没挂到任何机器的落地(手工建的、清空中转后剩下的)
   const unusedLandings = landings.filter((l) => usageOf(l.id).count === 0);
@@ -495,143 +508,165 @@ export default function RelayPage() {
         中转 = 前置机搭协议(抗封锁),流量经「落地」出网。车友连的还是前置机的订阅,只是出口 IP 换成落地那台的。换落地就直接点卡片上的「编辑」改串——订阅不变,客户无感。
       </div>
 
-      {/* 真表格:浏览器原生按列对齐,列宽自动取该列最宽内容 */}
-      {relayLines.length > 0 && (
-        <div className="rounded-xl border border-default-200 overflow-x-auto">
-          <table className="w-full text-sm border-collapse">
-            <thead>
-              <tr className="bg-default-100 text-xs text-default-600">
-                <th className="text-left font-medium px-3 py-2 whitespace-nowrap">中转机</th>
-                <th className="text-left font-medium px-3 py-2 whitespace-nowrap">协议</th>
-                <th className="text-left font-medium px-3 py-2 whitespace-nowrap">落地</th>
-                <th className="text-left font-medium px-3 py-2 whitespace-nowrap">落地 IP</th>
-                <th className="text-left font-medium px-3 py-2 whitespace-nowrap">测试/编辑</th>
-                <th className="text-right font-medium px-3 py-2 whitespace-nowrap">已用流量</th>
-                <th className="text-right font-medium px-3 py-2 whitespace-nowrap">已用天数</th>
-                <th className="text-left font-medium px-3 py-2 whitespace-nowrap">限速</th>
-                <th className="text-right font-medium px-3 py-2 whitespace-nowrap">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {relayLines.map((ln, idx) => {
-                const n = ln.node;
-                const l = landingById(ln.landingId);
-                const landingName = l ? `${l.name}(${l.type})` : `落地#${ln.landingId}`;
-                const online = n.status === 1;
-                const r = rowResult[ln.landingId];
-                const st = lineStats[`${n.id}-${ln.landingId}`];
-                const sp = lineSpeeds[`${n.id}-${ln.landingId}`] || 0;
-                const shown = ln.inbounds.slice(0, 2);
-                const rest = ln.inbounds.length - shown.length;
-                return (
-                  <tr
-                    key={`${n.id}-${ln.landingId}`}
-                    className={"border-t border-default-100 " + (idx % 2 === 1 ? "bg-default-50" : "")}
-                  >
-                    <td className="px-3 py-2 whitespace-nowrap">
-                      <span className="flex items-center gap-2">
-                        <span className="font-semibold">🖥️ {n.name}</span>
-                        <Chip size="sm" variant="flat" color={online ? "success" : "default"}>{online ? "在线" : "离线"}</Chip>
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap">
-                      <span className="flex items-center gap-1">
-                        {shown.map((ib: any) => (
-                          <Chip key={ib.id} size="sm" variant="flat" color="secondary">{protoLabel(ib.protocol)}</Chip>
-                        ))}
-                        {rest > 0 && <Chip size="sm" variant="flat" color="secondary">+{rest}</Chip>}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap">
-                      <span className="flex items-center gap-1">
-                        <Chip size="sm" variant="flat" color="warning">{l ? l.name : `落地#${ln.landingId}`}</Chip>
-                        {l && <span className="text-xs text-default-400">{l.type}</span>}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap font-mono text-xs text-default-600">
-                      {l ? landingAddr(l) : ""}
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap">
-                      <span className="flex items-center gap-1">
-                        <Button
-                          size="sm"
-                          variant="flat"
-                          color="secondary"
-                          className="min-w-0 h-7 px-2 text-xs"
-                          isLoading={rowTesting === ln.landingId}
-                          onPress={() => handleRowTest(l, n.id)}
-                        >
-                          测一下
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="flat"
-                          className="min-w-0 h-7 px-2 text-xs"
-                          isDisabled={!l}
-                          onPress={() => l && openEditLanding(l, n.id)}
-                        >
-                          编辑
-                        </Button>
-                        {r && <span className="text-xs">{testBadge(r)}</span>}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-right text-xs tabular-nums">
-                      {fmtUsed(st?.used || 0)}
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-right text-xs tabular-nums text-default-500">
-                      {st?.createdAt ? daysSince(st.createdAt) : "-"}
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap">
-                      <Button
-                        size="sm"
-                        variant="flat"
-                        color={sp > 0 ? "warning" : "default"}
-                        className="min-w-0 h-7 px-2 text-xs"
-                        onPress={() => openSpeed(n, ln.landingId, landingName)}
-                      >
-                        {sp > 0 ? `${sp} MB/s` : "不限速"}
-                      </Button>
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap">
-                      <span className="flex items-center justify-end gap-1">
-                        <Button
-                          size="sm"
-                          color="primary"
-                          className="min-w-0 h-7 px-2 text-xs"
-                          onPress={() => openNodeAssign(n, ln.landingId, landingName, ln.inbounds.length)}
-                        >
-                          👤 分配用户
-                        </Button>
-                        <Button
-                          size="sm"
-                          color="success"
-                          variant="flat"
-                          className="min-w-0 h-7 px-2 text-xs"
-                          isLoading={selfLoading === `${n.id}-${ln.landingId}`}
-                          onPress={() => handleAssignSelf(n.id, ln.landingId, `${n.name} → ${landingName}`)}
-                        >
-                          🔑 我自己用
-                        </Button>
-                        <Button
-                          size="sm"
-                          color="danger"
-                          variant="flat"
-                          className="min-w-0 h-7 px-2 text-xs"
-                          onPress={() => handleClearNode(n.id, n.name, ln.landingId, landingName)}
-                        >
-                          清空该条
-                        </Button>
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+      {/* 按中转机分组:一台机器一行分组头(机器名 + 在线状态 + 几条线 + 累计流量),点一下展开这台机器的线路表。
+          默认全部收起 —— 之前所有机器的线混在一张平表里,机器一多根本看不出哪条属于哪台。 */}
+      {relayGroups.length > 0 && (
+        <div className="space-y-2">
+          {relayGroups.map((g) => {
+            const n = g.node;
+            const online = n.status === 1;
+            const open = !!expandedNodes[n.id];
+            return (
+              <div key={n.id} className="rounded-xl border border-default-200 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => toggleNode(n.id)}
+                  className="w-full flex items-center gap-2 px-3 py-2 bg-default-100 hover:bg-default-200 text-left"
+                >
+                  <span className="text-xs text-default-500 w-3">{open ? "▾" : "▸"}</span>
+                  <span className="font-semibold text-sm">🖥️ {n.name}</span>
+                  <Chip size="sm" variant="flat" color={online ? "success" : "default"}>{online ? "在线" : "离线"}</Chip>
+                  <span className="text-xs text-default-500">{g.lines.length} 条线</span>
+                  <span className="text-xs text-default-400">· 累计 {fmtUsed(groupUsed(n.id, g.lines))}</span>
+                  <span className="ml-auto text-xs text-default-500">{open ? "收起" : "展开"}</span>
+                </button>
+
+                {open && (
+                  <div className="overflow-x-auto">
+                    {/* 展开后保持原 7 列:中转机 / 协议 / 备注(落地名+IP+测一下·编辑) / 已用流量 / 已用天数 / 限速 / 操作 */}
+                    <table className="w-full text-sm border-collapse">
+                      <thead>
+                        <tr className="bg-default-50 text-xs text-default-600">
+                          <th className="text-left font-medium px-3 py-2 whitespace-nowrap">中转机</th>
+                          <th className="text-left font-medium px-3 py-2 whitespace-nowrap">协议</th>
+                          <th className="text-left font-medium px-3 py-2 whitespace-nowrap">备注</th>
+                          <th className="text-right font-medium px-3 py-2 whitespace-nowrap">已用流量</th>
+                          <th className="text-right font-medium px-3 py-2 whitespace-nowrap">已用天数</th>
+                          <th className="text-left font-medium px-3 py-2 whitespace-nowrap">限速</th>
+                          <th className="text-right font-medium px-3 py-2 whitespace-nowrap">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {g.lines.map((ln, idx) => {
+                          const l = landingById(ln.landingId);
+                          const landingName = l ? `${l.name}(${l.type})` : `落地#${ln.landingId}`;
+                          const r = rowResult[ln.landingId];
+                          const st = lineStats[`${n.id}-${ln.landingId}`];
+                          const sp = lineSpeeds[`${n.id}-${ln.landingId}`] || 0;
+                          const shown = ln.inbounds.slice(0, 2);
+                          const rest = ln.inbounds.length - shown.length;
+                          return (
+                            <tr
+                              key={`${n.id}-${ln.landingId}`}
+                              className={"border-t border-default-100 " + (idx % 2 === 1 ? "bg-default-50" : "")}
+                            >
+                              <td className="px-3 py-2 whitespace-nowrap">
+                                <span className="flex items-center gap-2">
+                                  <span className="font-semibold">🖥️ {n.name}</span>
+                                  <Chip size="sm" variant="flat" color={online ? "success" : "default"}>{online ? "在线" : "离线"}</Chip>
+                                </span>
+                              </td>
+                              <td className="px-3 py-2 whitespace-nowrap">
+                                <span className="flex items-center gap-1">
+                                  {shown.map((ib: any) => (
+                                    <Chip key={ib.id} size="sm" variant="flat" color="secondary">{protoLabel(ib.protocol)}</Chip>
+                                  ))}
+                                  {rest > 0 && <Chip size="sm" variant="flat" color="secondary">+{rest}</Chip>}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2">
+                                <span className="flex flex-col gap-1">
+                                  <span className="flex items-center gap-1 whitespace-nowrap">
+                                    <Chip size="sm" variant="flat" color="warning">{l ? l.name : `落地#${ln.landingId}`}</Chip>
+                                    {l && <span className="text-xs text-default-400">{l.type}</span>}
+                                    <span className="font-mono text-xs text-default-600">{l ? landingAddr(l) : ""}</span>
+                                  </span>
+                                  <span className="flex items-center gap-1 whitespace-nowrap">
+                                    <Button
+                                      size="sm"
+                                      variant="flat"
+                                      color="secondary"
+                                      className="min-w-0 h-7 px-2 text-xs"
+                                      isLoading={rowTesting === ln.landingId}
+                                      onPress={() => handleRowTest(l, n.id)}
+                                    >
+                                      测一下
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="flat"
+                                      className="min-w-0 h-7 px-2 text-xs"
+                                      isDisabled={!l}
+                                      onPress={() => l && openEditLanding(l, n.id)}
+                                    >
+                                      编辑
+                                    </Button>
+                                    {r && <span className="text-xs">{testBadge(r)}</span>}
+                                  </span>
+                                </span>
+                              </td>
+                              <td className="px-3 py-2 whitespace-nowrap text-right text-xs tabular-nums">
+                                {fmtUsed(st?.used || 0)}
+                              </td>
+                              <td className="px-3 py-2 whitespace-nowrap text-right text-xs tabular-nums text-default-500">
+                                {st?.createdAt ? daysSince(st.createdAt) : "-"}
+                              </td>
+                              <td className="px-3 py-2 whitespace-nowrap">
+                                <Button
+                                  size="sm"
+                                  variant="flat"
+                                  color={sp > 0 ? "warning" : "default"}
+                                  className="min-w-0 h-7 px-2 text-xs"
+                                  onPress={() => openSpeed(n, ln.landingId, landingName)}
+                                >
+                                  {sp > 0 ? `${sp} MB/s` : "不限速"}
+                                </Button>
+                              </td>
+                              <td className="px-3 py-2 whitespace-nowrap">
+                                <span className="flex items-center justify-end gap-1">
+                                  <Button
+                                    size="sm"
+                                    color="primary"
+                                    className="min-w-0 h-7 px-2 text-xs"
+                                    onPress={() => openNodeAssign(n, ln.landingId, landingName, ln.inbounds.length)}
+                                  >
+                                    👤 分配用户
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    color="success"
+                                    variant="flat"
+                                    className="min-w-0 h-7 px-2 text-xs"
+                                    isLoading={selfLoading === `${n.id}-${ln.landingId}`}
+                                    onPress={() => handleAssignSelf(n.id, ln.landingId, `${n.name} → ${landingName}`)}
+                                  >
+                                    🔑 我自己用
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    color="danger"
+                                    variant="flat"
+                                    className="min-w-0 h-7 px-2 text-xs"
+                                    onPress={() => handleClearNode(n.id, n.name, ln.landingId, landingName)}
+                                  >
+                                    清空该条
+                                  </Button>
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
-      {relayLines.length === 0 && (
+      {relayGroups.length === 0 && (
         <div className="text-center text-default-400 py-8">
           还没有中转。点右上角「⚡ 搭中转」→ 选前置机 + 粘贴落地(住宅 socks 或协议链接)→ 测试通 → 搭建。
         </div>

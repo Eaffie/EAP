@@ -187,7 +187,7 @@ public class InboundController extends BaseController {
         return inboundService.unassignUser(Long.valueOf(String.valueOf(body.get("id"))));
     }
 
-    /** 每条线路(直连/中转)的累计流量 + 建立时间;直连的 landingId 为 null */
+    /** 每条线路的累计流量 + 建立时间;直连返回 inboundId(线路 = 机器 × 入站),中转 landingId 非空、inboundId 为空 */
     @RequireRole
     @PostMapping("/line-stats")
     public R lineStats() {
@@ -202,7 +202,8 @@ public class InboundController extends BaseController {
     }
 
     /**
-     * 线路级限速:整条线路(机器 × 落地;landingId 为空 = 该机的直连)一个限速,不按车友分。
+     * 线路级限速:中转整条(机器 × 落地)一个;直连按入站(inboundId)各一个,不按车友分。
+     * landingId 为空 = 直连;直连不传 inboundId 时按老的「整机直连」口径(兼容旧调用)。
      * speed&lt;=0 解除。
      */
     @LogAnnotation
@@ -212,12 +213,13 @@ public class InboundController extends BaseController {
         return inboundService.setLineSpeed(
                 body.get("nodeId") == null ? null : Long.valueOf(String.valueOf(body.get("nodeId"))),
                 body.get("landingId") == null ? null : Long.valueOf(String.valueOf(body.get("landingId"))),
+                asLong(body.get("inboundId")),
                 body.get("speed") == null ? null : Integer.valueOf(String.valueOf(body.get("speed"))));
     }
 
     /**
      * 停用 / 恢复某车友的一条线路。
-     * landingId 允许缺省或为 null —— 那表示这台机器的直连线路。
+     * landingId 允许缺省或为 null —— 那表示直连;直连再按 inboundId 指定是哪一条入站的线路。
      */
     @LogAnnotation
     @RequireRole
@@ -228,6 +230,7 @@ public class InboundController extends BaseController {
                 asLong(body.get("userId")),
                 asLong(body.get("nodeId")),
                 asLong(body.get("landingId")),
+                asLong(body.get("inboundId")),
                 body.get("status") == null ? null : Integer.valueOf(String.valueOf(body.get("status"))));
     }
 
@@ -244,6 +247,7 @@ public class InboundController extends BaseController {
                 asLong(body.get("userId")),
                 asLong(body.get("nodeId")),
                 asLong(body.get("landingId")),
+                asLong(body.get("inboundId")),
                 asLong(body.get("flow")),
                 asLong(body.get("expTime")),
                 body.get("speedId") == null ? null : Integer.valueOf(String.valueOf(body.get("speedId"))));
@@ -255,7 +259,7 @@ public class InboundController extends BaseController {
     @PostMapping("/line-delete")
     public R lineDelete(@RequestBody Map<String, Object> body) {
         return inboundService.deleteLine(asLong(body.get("userId")), asLong(body.get("nodeId")),
-                asLong(body.get("landingId")));
+                asLong(body.get("landingId")), asLong(body.get("inboundId")));
     }
 
     /** 给协议改显示名(写 Inbound.remark,车友订阅里的节点名随之变干净) */

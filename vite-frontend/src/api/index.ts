@@ -96,18 +96,19 @@ export const assignAllToUser = (data: any) => Network.post("/inbound/assign-all"
 // 「我自己用」:把这台机器/这条中转的协议开给当前登录的管理员自己(不限速/不限量/不到期)
 export const assignSelf = (data: any) => Network.post("/inbound/assign-self", data);
 export const unassignInboundUser = (id: number) => Network.post("/inbound/unassign", { id });
-// 按【线路】操作(线路 = 车友 × 机器 × 落地;landingId 传 null 表示这台机器的直连)。
+// 按【线路】操作(线路:中转 = 车友 × 机器 × 落地;直连 = 车友 × 机器 × 入站)。
+// landingId 传 null 表示直连,这时再传 inboundId 指明是哪一条直连入站(不传 = 升级前那种「整机直连」口径)。
 // unassignInboundUser 取消的是单个协议,一条线路有六个,挨个点太蠢。
-export const setLineStatus = (userId: number, nodeId: number, landingId: number | null, status: number) =>
-  Network.post("/inbound/line-status", { userId, nodeId, landingId, status });
-export const deleteLine = (userId: number, nodeId: number, landingId: number | null) =>
-  Network.post("/inbound/line-delete", { userId, nodeId, landingId });
+export const setLineStatus = (userId: number, nodeId: number, landingId: number | null, inboundId: number | null, status: number) =>
+  Network.post("/inbound/line-status", { userId, nodeId, landingId, inboundId, status });
+export const deleteLine = (userId: number, nodeId: number, landingId: number | null, inboundId: number | null) =>
+  Network.post("/inbound/line-delete", { userId, nodeId, landingId, inboundId });
 // 续费:改这条线路的额度/到期/限速。字段给 null = 该项不动。
 // 不走「删了重分」是因为重分会换 UUID 和端口,车友手上的订阅会作废。
 export const updateLine = (
-  userId: number, nodeId: number, landingId: number | null,
+  userId: number, nodeId: number, landingId: number | null, inboundId: number | null,
   patch: { flow?: number | null; expTime?: number | null; speedId?: number | null },
-) => Network.post("/inbound/line-update", { userId, nodeId, landingId, ...patch });
+) => Network.post("/inbound/line-update", { userId, nodeId, landingId, inboundId, ...patch });
 export const getUserSub = (userId: number) => Network.post("/inbound/user-sub", { userId });
 // 按库里的全量重新下发这台机器的 sing-box 配置(整份覆盖,重复点没副作用)
 export const pushNodeConfig = (nodeId: number) => Network.post("/inbound/push-config", { nodeId });
@@ -116,10 +117,11 @@ export const pushNodeConfig = (nodeId: number) => Network.post("/inbound/push-co
 export const oneClickRelay = (nodeId: number, link: string, name?: string, sni?: string, protocols?: string[]) => Network.post("/inbound/one-click-relay", { nodeId, link, name, sni, protocols });
 export const testLanding = (nodeId: number, link: string) => Network.post("/landing/test", { nodeId, link });
 export const getLandingList = () => Network.post("/landing/list");
-// 线路级限速:整条线路(机器 × 落地)一个限速,上传下载各限这么多(MB/s),0=解除。
-// 直连线路没有落地:landingId 传 null(或 0),后端按「机器 × 直连」存。
-export const setLineSpeed = (nodeId: number, landingId: number | null, speed: number) =>
-  Network.post("/inbound/line-speed", { nodeId, landingId, speed });
+// 线路级限速:上传下载各限这么多(MB/s),0=解除。
+// 中转:整条(机器 × 落地)一个,landingId 传落地、inboundId 传 null;
+// 直连:一条入站一条线路 —— landingId 传 null、inboundId 传那条入站。
+export const setLineSpeed = (nodeId: number, landingId: number | null, inboundId: number | null, speed: number) =>
+  Network.post("/inbound/line-speed", { nodeId, landingId, inboundId, speed });
 export const getLineSpeeds = () => Network.post("/inbound/line-speeds");
 // 每条线路(直连/中转)累计流量 + 建立时间(卡片上显示「N天用了X」)
 export const getLineStats = () => Network.post("/inbound/line-stats");

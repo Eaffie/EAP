@@ -166,7 +166,8 @@ public class CheckExpiryAsync {
                 continue;
             }
 
-            List<Forward> forwards = lineForwards(line.getUserId(), line.getNodeId(), line.getLandingId());
+            List<Forward> forwards = lineForwards(line.getUserId(), line.getNodeId(), line.getLandingId(),
+                    line.getInboundId());
             if (forwards.isEmpty()) {
                 continue;
             }
@@ -199,14 +200,18 @@ public class CheckExpiryAsync {
             // 到期的不会跟着复活 —— 那个边界在 ResetFlowAsync 里,别改坏。
             line.setStatus(0);
             inboundLineMapper.updateById(line);
-            log.info("线路[user={} node={} landing={}] {} → 已停 {} 条转发",
-                    line.getUserId(), line.getNodeId(), line.getLandingId(),
+            log.info("线路[user={} node={} landing={} inbound={}] {} → 已停 {} 条转发",
+                    line.getUserId(), line.getNodeId(), line.getLandingId(), line.getInboundId(),
                     expired ? "已到期" : "流量跑满", live.size());
         }
     }
 
-    /** 该线路(车友 × 机器 × 落地)下的所有转发 */
-    private List<Forward> lineForwards(Long userId, Long nodeId, Long landingId) {
+    /**
+     * 该线路下的所有转发。中转 = 车友 × 机器 × 落地(该落地下全部协议);
+     * 直连 = 车友 × 机器 × 入站(landingId 为空、lineInboundId 指向那条入站)。
+     * lineInboundId 为空且没有落地 = 升级前留下的「整机直连」僵尸行:不认任何转发,原样跳过。
+     */
+    private List<Forward> lineForwards(Long userId, Long nodeId, Long landingId, Long lineInboundId) {
         List<InboundUser> ius = inboundUserMapper.selectList(
                 new QueryWrapper<InboundUser>().eq("user_id", userId));
         List<Long> forwardIds = new ArrayList<>();
@@ -227,7 +232,15 @@ public class CheckExpiryAsync {
                 continue;
             }
             Long lid = in.getLandingId();
-            boolean sameLine = (landingId == null) ? (lid == null) : landingId.equals(lid);
+            boolean sameLine;
+            if (lid != null) {
+                sameLine = lid.equals(landingId);
+            } else if (landingId != null) {
+                sameLine = false;
+            } else {
+                // 直连:按入站认。lineInboundId 为空 = 老的整机线路,一条都不算它的
+                sameLine = lineInboundId != null && lineInboundId.equals(in.getId());
+            }
             if (sameLine) {
                 forwardIds.add(iu.getGostForwardId());
             }

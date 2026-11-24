@@ -8,9 +8,10 @@ import java.io.Serializable;
 
 /**
  * <p>
- * 线路 = 车友 × 机器 × 落地组。
- * landing_id 空=该机器的直连线路;非空=该落地的中转线路。
- * 同机的直连和每个中转各算一条线路:各一条订阅、各一份流量/到期配额。
+ * 线路 = 车友 × 机器 × 落地组;直连(landing_id 空)再按【入站】细分。
+ * landing_id 非空=该落地的中转线路(inbound_id 恒为空,一条中转 = 该落地下全部协议);
+ * landing_id 空=直连线路,此时 inbound_id 指向具体那一条直连入站 —— 每条直连入站
+ * 各算一条线路:各一条订阅、各一份流量/到期配额、各自的线路级限速。
  * 已用流量不存这里,实时汇总该线路各协议对应转发的 in_flow+out_flow。
  * </p>
  *
@@ -30,8 +31,15 @@ public class InboundLine implements Serializable {
     /** 机器 */
     private Long nodeId;
 
-    /** 落地ID:空=直连线路 */
+    /** 落地ID:空=直连线路(此时由 inboundId 区分是哪条入站) */
     private Long landingId;
+
+    /**
+     * 直连线路所属入站(landing_id 为空时用)。
+     * 中转恒为空 —— 一条中转线路本来就是该落地的全部协议合起来一条。
+     * 老库里的直连线路这一列为空,启动时由 SchemaMigration 按入站补开。
+     */
+    private Long inboundId;
 
     /** 该线路的订阅 token */
     private String subToken;

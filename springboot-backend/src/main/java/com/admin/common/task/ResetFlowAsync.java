@@ -208,7 +208,7 @@ public class ResetFlowAsync {
                 if (AccountLimits.expired(line.getExpTime(), now)) {
                     continue;
                 }
-                List<Forward> fs = byLine.get(AccountLineResume.key(line.getNodeId(), line.getLandingId()));
+                List<Forward> fs = byLine.get(AccountLineResume.key(line.getNodeId(), line.getLandingId(), line.getInboundId()));
                 long used = fs == null ? 0L : AccountLineResume.usedBytes(fs);
                 if (AccountLimits.lineDepleted(line.getFlow(), used)) {
                     depletedLineIds.add(line.getId());

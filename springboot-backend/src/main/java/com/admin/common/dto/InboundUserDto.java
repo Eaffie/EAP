@@ -35,7 +35,12 @@ public class InboundUserDto {
     /** 流量配额,单位字节(可空=不改);写到该用户 User.flow */
     private Long flow;
 
-    /** 协议级分配(assign-all):只分配这些入站id(须同属 nodeId+relay+landingId 限定的同一条线路);
-     *  空=该线路全部协议。线路额度/到期仍按 flow/expTime 写到 InboundLine,与整条分配一致。 */
+    /**
+     * 协议级分配(assign-all):只分配这些入站id。
+     * 中转:须同属 nodeId+landingId 那条线路,空 = 该线路全部协议;
+     * 直连:每条直连入站本身就是一条线路,所以传 [某条入站] = 只开那一条(各出各的订阅 token/配额/到期),
+     * 空 = 该机全部直连协议、每条入站各一条线路。
+     * 线路额度/到期按 flow/expTime 写到 InboundLine,与整条分配一致。
+     */
     private List<Long> inboundIds;
 }

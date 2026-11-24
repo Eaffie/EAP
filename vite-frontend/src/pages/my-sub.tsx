@@ -23,6 +23,9 @@ export default function MySubPage() {
   const [allSubToken, setAllSubToken] = useState<string>("");
   const [account, setAccount] = useState<any>(null); // 账号到期 / 账号总流量 / 是否被停用
   const [loading, setLoading] = useState(true);
+  // 单条线路的卡片默认收起:车友要的是上面那条「全部线路」聚合订阅,
+  // 几十张单线卡铺满整页没有用(链接他又不从这里拿)。要单条链接时点一下展开。
+  const [showLines, setShowLines] = useState(false);
 
   // 订阅链接开头:管理员设了「订阅地址(给车友的)」就用它,没设 = 网页地址(和以前一样)。
   // 和线路一起在 load() 里取,线路出来时地址已经是对的
@@ -183,8 +186,24 @@ export default function MySubPage() {
           </CardBody>
         </Card>
       ) : (
-        <div className="space-y-3">
-          {lines.map((ln: any, idx: number) => {
+        <>
+          {/* 单条线路的开关:默认收起。只有 1 条线路时没有聚合卡可看,列表就直接展开,别把唯一的内容藏起来 */}
+          {lines.length > 1 && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button size="sm" variant="flat" onPress={() => setShowLines((v) => !v)}>
+                {showLines ? `收起单条线路（${lines.length} 条）` : `展开全部线路（${lines.length} 条）`}
+              </Button>
+              <span className="text-xs text-default-400">
+                {showLines
+                  ? "每条线路各自一个套餐、各自一条链接"
+                  : "上面那条「全部线路」已经包含下面每一条线路的节点"}
+              </span>
+            </div>
+          )}
+
+          {(showLines || lines.length === 1) && (
+            <div className="space-y-3">
+              {lines.map((ln: any, idx: number) => {
             const url = subUrl(ln.subToken);
             const isRelay = ln.type === "relay";
             const used = ln.flow || 0;
@@ -266,7 +285,7 @@ export default function MySubPage() {
                             if (!confirm(`彻底删除「${ln.nodeName}」这条线路?
 该线路下 ${ln.protocolCount} 个协议的分配和转发会一并删掉,端口释放。
 这一步不可逆,以后要再用得重新分配。`)) return;
-                            const res = await deleteLine(myId, ln.nodeId, ln.landingId ?? null);
+                            const res = await deleteLine(myId, ln.nodeId, ln.landingId ?? null, ln.inboundId ?? null);
                             if (res.code === 0) {
                               toast.success("已删掉这条线路");
                               await load();
@@ -284,7 +303,9 @@ export default function MySubPage() {
               </Card>
             );
           })}
-        </div>
+            </div>
+          )}
+        </>
       )}
 
       {/* 用法 */}

@@ -61,4 +61,11 @@ public class SpeedLimit implements Serializable {
     /** 线路级限速:所属落地 */
     private Long landingId;
 
+    /**
+     * 线路级限速:直连线路所属入站(landing_id 为空时用)。
+     * 中转恒为空(一条中转一个限速器);直连按入站各限各的。
+     * 老库里那批「整机直连」规则这一列为空,仍然生效(见 InboundServiceImpl.lineSpeedRule 的回退)。
+     */
+    private Long inboundId;
+
 }

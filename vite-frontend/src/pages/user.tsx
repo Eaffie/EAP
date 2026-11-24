@@ -1654,7 +1654,7 @@ export default function UserPage() {
                         if (dRaw === null) return;
                         const days = Number(dRaw);
                         if (!(days >= 0)) { toast.error('天数要填数字'); return; }
-                        const res = await updateLine(subUserId, ln.nodeId, ln.landingId ?? null, {
+                        const res = await updateLine(subUserId, ln.nodeId, ln.landingId ?? null, ln.inboundId ?? null, {
                           flow, expTime: days > 0 ? Date.now() + days * 86400000 : 0,
                         });
                         if (res.code === 0) {
@@ -1679,7 +1679,7 @@ export default function UserPage() {
                         const to = ln.lineStatus === 0 ? 1 : 0;
                         if (to === 0 && !confirm(`停用「${ln.nodeName}」这条线路?
 对方立刻就连不上了,流量和到期都留着,随时可以恢复。`)) return;
-                        const res = await setLineStatus(subUserId, ln.nodeId, ln.landingId ?? null, to);
+                        const res = await setLineStatus(subUserId, ln.nodeId, ln.landingId ?? null, ln.inboundId ?? null, to);
                         if (res.code === 0) {
                           toast.success(to === 0 ? '已停用这条线路' : '已恢复这条线路');
                           await reloadSubLines(subUserId);
@@ -1699,7 +1699,7 @@ export default function UserPage() {
                         if (!confirm(`彻底删除「${ln.nodeName}」这条线路?
 该线路下 ${ln.protocolCount} 个协议的分配和转发会一并删掉,端口释放。
 这一步不可逆,以后要再给他用得重新分配。`)) return;
-                        const res = await deleteLine(subUserId, ln.nodeId, ln.landingId ?? null);
+                        const res = await deleteLine(subUserId, ln.nodeId, ln.landingId ?? null, ln.inboundId ?? null);
                         if (res.code === 0) {
                           toast.success('已收回这条线路');
                           await reloadSubLines(subUserId);

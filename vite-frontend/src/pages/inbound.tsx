@@ -46,8 +46,8 @@ function daysSince(ts: number): string {
 
 /**
  * 直连线路 · 表格模式。
- * 一条直连入站 = 一行(不再按机器合并),每行的按钮只作用于该行那条入站。
- * 直连没有落地,所以不限速/用量都按「机器 × 直连」这条线路算。
+ * 一条直连入站 = 一行 = 一条独立线路:各自一条订阅 token、各自一份配额/到期、各自一个线路级限速。
+ * 中转那边是「机器 × 落地」一条线路,口径不变。
  */
 export default function InboundPage() {
   const [inbounds, setInbounds] = useState<any[]>([]);
@@ -69,7 +69,8 @@ export default function InboundPage() {
   const [assignForm, setAssignForm] = useState<any>({ nodeId: null, lineName: "", inboundIds: [], userId: null, speedId: null, expDate: null, flowGb: null });
   const [assignLoading, setAssignLoading] = useState(false);
 
-  // 线路级限速 / 用量:直连没有落地,key 统一用「机器id-落地id」(落地为空时是 "机器id-null")
+  // 线路级限速 / 用量:直连没有落地,线路的身份是「机器 × 入站」,key 用「机器id-落地id-入站id」
+  // (中转那份仍然是「机器id-落地id」,这里不看)
   const [lineSpeeds, setLineSpeeds] = useState<Record<string, number>>({});
   const [lineStats, setLineStats] = useState<Record<string, { used: number; createdAt: number }>>({});
 
@@ -86,8 +87,16 @@ export default function InboundPage() {
   const [speedSaving, setSpeedSaving] = useState(false);
   const [speedForm, setSpeedForm] = useState<any>({ nodeId: null, landingId: null, lineName: "", speed: 0 });
 
-  /** 线路 key:和后端「机器id + '-' + 落地id」一致(落地为空 → "null") */
-  const lineKey = (nodeId: any, landingId: any) => `${nodeId}-${landingId ?? null}`;
+  /**
+   * 线路 key:和后端口径一致 —— 直连 = 「机器id-落地(null)-入站id」,中转 = 「机器id-落地id」。
+   * inboundId 传 null 取的是老库那种「整机直连」规则(升级前留下的,仍然生效)。
+   */
+  const lineKey = (nodeId: any, landingId: any, inboundId: any) =>
+    landingId ? `${nodeId}-${landingId}` : `${nodeId}-${landingId ?? null}-${inboundId ?? null}`;
+
+  /** 这条直连入站的线路限速:优先它自己的,没有就退回整机那条老规则(升级前按机器设的) */
+  const speedOfInbound = (nodeId: any, inboundId: any) =>
+    lineSpeeds[lineKey(nodeId, null, inboundId)] ?? lineSpeeds[lineKey(nodeId, null, null)] ?? 0;
 
   /** 这条入站属于哪台机器(机器删了就显示节点 id,别让整行消失) */
   const nodeNameOf = (nodeId: number) => nodes.find((n) => n.id === nodeId)?.name || `机器#${nodeId}`;
@@ -128,12 +137,12 @@ export default function InboundPage() {
         setUsers(Array.isArray(d) ? d : (d && d.records ? d.records : []));
       }
       if (sp.code === 0) setSpeedRules(sp.data || []);
-      // 线路用量/限速:失败不影响主列表
+      // 线路用量/限速:失败不影响主列表。直连按「机器-入站」取,同机不同入站各一份
       getLineStats().then((r: any) => {
         if (r.code === 0) {
           const m: Record<string, { used: number; createdAt: number }> = {};
           (r.data || []).forEach((x: any) => {
-            m[`${x.nodeId}-${x.landingId ?? null}`] = { used: x.used || 0, createdAt: x.createdAt || 0 };
+            m[lineKey(x.nodeId, x.landingId ?? null, x.inboundId ?? null)] = { used: x.used || 0, createdAt: x.createdAt || 0 };
           });
           setLineStats(m);
         }
@@ -141,7 +150,9 @@ export default function InboundPage() {
       getLineSpeeds().then((r: any) => {
         if (r.code === 0) {
           const m: Record<string, number> = {};
-          (r.data || []).forEach((x: any) => { m[`${x.nodeId}-${x.landingId ?? null}`] = x.speed || 0; });
+          (r.data || []).forEach((x: any) => {
+            m[lineKey(x.nodeId, x.landingId ?? null, x.inboundId ?? null)] = x.speed || 0;
+          });
           setLineSpeeds(m);
         }
       }).catch(() => {});
@@ -231,7 +242,8 @@ export default function InboundPage() {
     if (!assignForm.userId) return toast.error("请选择车友");
     setAssignLoading(true);
     try {
-      // inboundIds:只分配这一行那条入站(线路的配额/到期照常按「车友 × 机器 × 直连」记)
+      // inboundIds:只分配这一行那条入站 —— 直连一条入站就是一条独立线路,
+      // 配额/到期/订阅 token 都只记在它自己身上,同机其它直连不受影响
       const payload: any = { userId: assignForm.userId, nodeId: assignForm.nodeId, inboundIds: assignForm.inboundIds };
       if (assignForm.speedId) payload.speedId = assignForm.speedId;
       // 到期直接选日期(当天 23:59:59 截止),比填"多少天"直观,续费也只是把日期往后改
@@ -273,13 +285,14 @@ export default function InboundPage() {
     }
   };
 
-  // ===== 线路级限速(直连线路 = 机器 × 直连) =====
+  // ===== 线路级限速(直连 = 机器 × 入站,一条入站一条线路) =====
   const openSpeed = (ib: any) => {
     setSpeedForm({
       nodeId: ib.nodeId,
       landingId: null,
+      inboundId: ib.id,
       lineName: `${nodeNameOf(ib.nodeId)} · ${protoLabel(ib.protocol)}${ib.remark ? " · " + ib.remark : ""}`,
-      speed: lineSpeeds[lineKey(ib.nodeId, ib.landingId)] || 0,
+      speed: speedOfInbound(ib.nodeId, ib.id),
     });
     setSpeedOpen(true);
   };
@@ -289,8 +302,8 @@ export default function InboundPage() {
     if (!Number.isFinite(sp) || sp < 0) return toast.error("填个不小于 0 的数字");
     setSpeedSaving(true);
     try {
-      // 直连没有落地:landingId 传 null,后端按「机器 × 直连」这条线路存
-      const res = await setLineSpeed(speedForm.nodeId, null, Math.round(sp));
+      // 直连没有落地:landingId 传 null + inboundId = 只给这一条入站的线路限速
+      const res = await setLineSpeed(speedForm.nodeId, null, speedForm.inboundId ?? null, Math.round(sp));
       if (res.code === 0) {
         toast.success(sp > 0 ? `已把这条线路限速定为 ${sp} MB/s 并下发` : "已解除这条线路的限速");
         setSpeedOpen(false);
@@ -358,9 +371,9 @@ export default function InboundPage() {
               {directInbounds.map((ib, idx) => {
                 const n = nodes.find((x) => x.id === ib.nodeId);
                 const online = n?.status === 1;
-                // 直连没有落地:限速/用量按「机器 × 直连」这条线路取,和后端的分组口径一致
-                const st = lineStats[lineKey(ib.nodeId, ib.landingId)];
-                const sp = lineSpeeds[lineKey(ib.nodeId, ib.landingId)] || 0;
+                // 直连没有落地:这条线路的身份是「机器 × 入站」,用量/限速都按这一条入站取
+                const st = lineStats[lineKey(ib.nodeId, null, ib.id)] ?? lineStats[lineKey(ib.nodeId, null, null)];
+                const sp = speedOfInbound(ib.nodeId, ib.id);
                 return (
                   <tr
                     key={ib.id}
@@ -529,13 +542,14 @@ export default function InboundPage() {
         </ModalContent>
       </Modal>
 
-      {/* 线路级限速:整条直连线路(机器)一个上限,不按车友分 */}
+      {/* 线路级限速:一条直连入站一条线路,一个上限;不按车友分 */}
       <Modal isOpen={speedOpen} onClose={() => setSpeedOpen(false)}>
         <ModalContent>
           <ModalHeader>⚡ 线路限速「{speedForm.lineName}」</ModalHeader>
           <ModalBody className="space-y-3">
             <div className="text-xs text-default-500">
-              这台机器的<b>直连线路</b>共享这个上限,<b>不按车友分</b>:该线路所有客户加起来跑不超过它。
+              这条<b>直连入站</b>独占一个上限(它自己就是一条线路),<b>不按车友分</b>:这条线路所有客户加起来跑不超过它。
+              <br />同机其它直连协议各有各的上限,互不影响。
               <br />上传和下载<b>各限这么多</b>,单位是 <b>MB/s</b>(1 MB/s ≈ 8 Mbps)。
             </div>
             <Input

@@ -304,7 +304,7 @@ public class FlowController extends BaseController {
     }
 
     /**
-     * 协议/中转的线路级检查:该转发属于哪条线路(车友×机器×落地组)→ 汇总该线路已用流量,
+     * 协议/中转的线路级检查:该转发属于哪条线路(车友×机器×落地;直连再按入站)→ 汇总该线路已用流量,
      * 超过线路配额、或线路到期 → 暂停这条线路的所有转发(不影响车友其它线路)。
      */
     private void checkLineRelatedLimits(Forward forward, String userId) {
@@ -318,12 +318,14 @@ public class FlowController extends BaseController {
             if (in == null) {
                 return;
             }
+            // 直连线路的身份是「机器 × 入站」,中转还是「机器 × 落地」
+            boolean direct = in.getLandingId() == null;
             QueryWrapper<InboundLine> lw = new QueryWrapper<InboundLine>()
                     .eq("user_id", iu.getUserId()).eq("node_id", in.getNodeId());
-            if (in.getLandingId() != null) {
-                lw.eq("landing_id", in.getLandingId());
+            if (direct) {
+                lw.isNull("landing_id").eq("inbound_id", in.getId());
             } else {
-                lw.isNull("landing_id");
+                lw.eq("landing_id", in.getLandingId());
             }
             InboundLine line = inboundLineMapper.selectOne(lw.last("limit 1"));
             if (line == null) {
@@ -332,28 +334,28 @@ public class FlowController extends BaseController {
 
             boolean overFlow = false;
             if (line.getFlow() != null && line.getFlow() > 0) {
-                long used = sumLineFlow(iu.getUserId(), in.getNodeId(), in.getLandingId());
+                long used = sumLineFlow(iu.getUserId(), in.getNodeId(), in.getLandingId(), direct ? in.getId() : null);
                 overFlow = used >= line.getFlow() * BYTES_TO_GB;
             }
             boolean expired = line.getExpTime() != null && line.getExpTime() > 0 && line.getExpTime() <= System.currentTimeMillis();
             if (!overFlow && !expired) {
                 return;
             }
-            pauseLineForwards(iu.getUserId(), in.getNodeId(), in.getLandingId());
+            pauseLineForwards(iu.getUserId(), in.getNodeId(), in.getLandingId(), direct ? in.getId() : null);
             line.setStatus(0);
             line.setUpdatedTime(System.currentTimeMillis());
             inboundLineMapper.updateById(line);
-            log.info("线路已停:user={} node={} landing={} 超额={} 到期={}",
-                    iu.getUserId(), in.getNodeId(), in.getLandingId(), overFlow, expired);
+            log.info("线路已停:user={} node={} landing={} inbound={} 超额={} 到期={}",
+                    iu.getUserId(), in.getNodeId(), in.getLandingId(), direct ? in.getId() : null, overFlow, expired);
         } catch (Exception e) {
             log.warn("线路流量检查失败", e);
         }
     }
 
     /** 汇总某条线路已用流量(该线路各协议对应转发的上下行之和) */
-    private long sumLineFlow(Long userId, Long nodeId, Long landingId) {
+    private long sumLineFlow(Long userId, Long nodeId, Long landingId, Long lineInboundId) {
         long total = 0L;
-        for (Forward f : lineForwards(userId, nodeId, landingId)) {
+        for (Forward f : lineForwards(userId, nodeId, landingId, lineInboundId)) {
             total += (f.getInFlow() == null ? 0L : f.getInFlow())
                     + (f.getOutFlow() == null ? 0L : f.getOutFlow());
         }
@@ -361,8 +363,8 @@ public class FlowController extends BaseController {
     }
 
     /** 暂停某条线路的所有转发 */
-    private void pauseLineForwards(Long userId, Long nodeId, Long landingId) {
-        for (Forward f : lineForwards(userId, nodeId, landingId)) {
+    private void pauseLineForwards(Long userId, Long nodeId, Long landingId, Long lineInboundId) {
+        for (Forward f : lineForwards(userId, nodeId, landingId, lineInboundId)) {
             Tunnel tunnel = tunnelService.getById(f.getTunnelId());
             if (tunnel != null) {
                 // 自动批量停:和老版本一样按 _0 发、只停入口;节点回 not found 就跳过,库里不改(见 pauseByOriginalName)
@@ -379,14 +381,20 @@ public class FlowController extends BaseController {
         }
     }
 
-    /** 找出某条线路(车友×机器×落地组)下的所有转发 */
-    private List<Forward> lineForwards(Long userId, Long nodeId, Long landingId) {
+    /**
+     * 找出某条线路下的所有转发。中转 = 该机器该落地下全部协议;
+     * 直连 = lineInboundId 那一条入站(lineInboundId 为空 = 老的整机口径,兼容老数据)。
+     */
+    private List<Forward> lineForwards(Long userId, Long nodeId, Long landingId, Long lineInboundId) {
         List<Forward> result = new java.util.ArrayList<>();
         QueryWrapper<Inbound> iw = new QueryWrapper<Inbound>().eq("node_id", nodeId);
         if (landingId != null) {
             iw.eq("landing_id", landingId);
         } else {
             iw.isNull("landing_id");
+            if (lineInboundId != null) {
+                iw.eq("id", lineInboundId);
+            }
         }
         List<Inbound> inbounds = inboundMapper.selectList(iw);
         if (inbounds.isEmpty()) {

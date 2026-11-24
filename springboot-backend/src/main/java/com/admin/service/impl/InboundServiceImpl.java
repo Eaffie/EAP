@@ -555,7 +555,8 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             JSONObject result = new JSONObject();
             result.put("inboundUserId", existed.getId());
             result.put("link", f != null ? buildClientLink(in, existed, node, f) : "");
-            result.put("subToken", getOrCreateLineSubToken(user.getId(), node.getId(), in.getLandingId()));
+            result.put("subToken", getOrCreateLineSubToken(user.getId(), node.getId(),
+                    in.getLandingId(), lineInboundId(in.getLandingId(), in.getId())));
             return R.ok(result);
         }
 
@@ -599,8 +600,9 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             userMapper.updateById(user);
         }
 
-        // 5. 存 inbound_user(带该【线路】的订阅 token:车友×机器×落地组一条)
-        String subToken = getOrCreateLineSubToken(user.getId(), node.getId(), in.getLandingId());
+        // 5. 存 inbound_user(带该【线路】的订阅 token:中转=车友×机器×落地一条;直连=车友×机器×入站一条)
+        String subToken = getOrCreateLineSubToken(user.getId(), node.getId(),
+                in.getLandingId(), lineInboundId(in.getLandingId(), in.getId()));
 
         InboundUser iu = new InboundUser();
         iu.setInboundId(in.getId());
@@ -662,28 +664,26 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         if (inbounds.isEmpty()) {
             return R.err(relay ? "这条中转还没有协议" : "这台机器还没有直连协议,先去「一键添加」");
         }
-        // 订阅按【线路】= 车友 × 机器 × 落地组:一组共享一条订阅 token;车友可有很多条线路
-        java.util.Map<Long, String> lineTokens = new java.util.HashMap<>();
+        // 订阅按【线路】算:中转 = 车友 × 机器 × 落地组(整组共享一条 token);
+        // 直连 = 车友 × 机器 × 入站(每条直连入站各一条 token、各一份配额/到期)。键见 lineKeyOf。
+        java.util.Map<String, String> lineTokens = new java.util.HashMap<>();
         // 线路记录(流量配额/到期都记在它上面)必须在循环【之前】建好/更新:
         // 重新分配(续费、改配额)时协议往往已经全都分过了,循环会整个跳过,
         // 那样新填的配额和到期就永远写不进去 —— 用户那边看着"改了没反应"。
+        // 只有明确指定了机器时才预建(和以前一样):不指定机器 = 全机器批量,给没分到的机器凭空建线路是多余的。
         if (dto.getNodeId() != null) {
-            lineTokens.put(dto.getNodeId(),
-                    getOrCreateLine(user.getId(), dto.getNodeId(), groupLanding, dto.getFlow(), dto.getExpTime()).getSubToken());
-        }
-        // 限速器优先级:线路级(整条中转一个池) > 车友级(每车友一个池) > 不限
-        // 【只能写 if/else,不能写三元】三元里一条分支是 int(intValue() 的返回)、另一条是 Integer(null),
-        // Java 会把整个表达式提升成 int：走到 null 那条就得拆箱 → NPE "Integer.intValue()"。
-        // 「我自己用」会清空 speedId,线路又没设限速时必然走 null 分支,所以那条路径必崩。
-        SpeedLimit lineRule = lineSpeedRule(dto.getNodeId(), groupLanding);
-        Integer userLimiter = null;
-        if (lineRule != null) {
-            userLimiter = lineRule.getId().intValue();
-        } else if (dto.getSpeedId() != null) {
-            userLimiter = perUserLimiterName(user.getId());
+            for (Inbound in : inbounds) {
+                String lk = lineKeyOf(in.getNodeId(), in.getLandingId(), lineInboundId(in.getLandingId(), in.getId()));
+                if (lineTokens.containsKey(lk)) {
+                    continue; // 中转:同一条线路的多个协议只建一次
+                }
+                lineTokens.put(lk, getOrCreateLine(user.getId(), in.getNodeId(), in.getLandingId(),
+                        lineInboundId(in.getLandingId(), in.getId()), dto.getFlow(), dto.getExpTime()).getSubToken());
+            }
         }
         java.util.Set<Long> affectedNodes = new java.util.HashSet<>();
-        java.util.Set<Long> limiterPushedNodes = new java.util.HashSet<>();
+        // 已经推过限速器的「节点 + 限速器名」,同一台机器上同一条线路的多个协议只推一次
+        java.util.Set<String> limiterPushed = new java.util.HashSet<>();
         // 本次分配里已确认「机器上被别的程序占了」的端口,按节点分开记。
         // 一台机 6 个协议逐个分配,不共享的话每个协议都要把同一批被占端口重新踩一遍,
         // 而每踩一次就是一个最多 10 秒的节点往返 —— 分配卡死主要卡在这。
@@ -693,6 +693,24 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         for (Inbound in : inbounds) {
             if (in.getStatus() != null && in.getStatus() == 0) {
                 continue;
+            }
+            // 这条协议所属的线路:中转取落地组,直连取这条入站
+            Long thisInbound = lineInboundId(in.getLandingId(), in.getId());
+            String thisLineKey = lineKeyOf(in.getNodeId(), in.getLandingId(), thisInbound);
+            // 限速器优先级:线路级(整条线路一个池) > 车友级(每车友一个池) > 不限
+            // 不指定机器(全机器批量)时和以前一样不看线路级规则:那时一条「分配」横跨多台机器,
+            // 线路级限速是每台机器(直连再按入站)各一条,没法用同一个限速器代表。
+            // 【只能写 if/else,不能写三元】三元里一条分支是 int(intValue() 的返回)、另一条是 Integer(null),
+            // Java 会把整个表达式提升成 int：走到 null 那条就得拆箱 → NPE "Integer.intValue()"。
+            // 「我自己用」会清空 speedId,线路又没设限速时必然走 null 分支,所以那条路径必崩。
+            SpeedLimit lineRule = (dto.getNodeId() != null)
+                    ? lineSpeedRule(in.getNodeId(), in.getLandingId(), thisInbound)
+                    : null;
+            Integer userLimiter = null;
+            if (lineRule != null) {
+                userLimiter = lineRule.getId().intValue();
+            } else if (dto.getSpeedId() != null) {
+                userLimiter = perUserLimiterName(user.getId());
             }
             InboundUser existed = inboundUserMapper.selectOne(new QueryWrapper<InboundUser>()
                     .eq("inbound_id", in.getId()).eq("user_id", user.getId()).last("limit 1"));
@@ -712,12 +730,12 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 if (existed.getGostForwardId() != null && (userLimiter != null || dto.getExpTime() != null)) {
                     Node n = nodeMapper.selectById(in.getNodeId());
                     if (n != null) {
-                        if (userLimiter != null && !limiterPushedNodes.contains(n.getId())) {
+                        if (userLimiter != null && !limiterPushed.contains(n.getId() + "|" + userLimiter)) {
                             R lr = (lineRule != null)
                                     ? speedLimitService.pushUserLimiter(lineRule.getId().intValue(), userLimiter.longValue(), n.getId())
                                     : speedLimitService.pushUserLimiter(dto.getSpeedId(), userLimiter.longValue(), n.getId());
                             if (lr.getCode() == 0) {
-                                limiterPushedNodes.add(n.getId());
+                                limiterPushed.add(n.getId() + "|" + userLimiter);
                             } else if (firstError == null) {
                                 firstError = "下发限速器失败:" + lr.getMsg();
                             }
@@ -750,18 +768,22 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 continue;
             }
             // 该节点上这个车友的限速器只推一次,后面这台机器的所有协议共享它(避免每协议重推破坏共享)
-            if (userLimiter != null && !limiterPushedNodes.contains(node.getId())) {
+            if (userLimiter != null && !limiterPushed.contains(node.getId() + "|" + userLimiter)) {
                 R lr = speedLimitService.pushUserLimiter(dto.getSpeedId(), userLimiter.longValue(), node.getId());
                 if (lr.getCode() != 0) {
                     if (firstError == null) firstError = "下发限速器失败:" + lr.getMsg();
                     skipped++;
                     continue;
                 }
-                limiterPushedNodes.add(node.getId());
+                limiterPushed.add(node.getId() + "|" + userLimiter);
             }
-            // 这条线路(机器×落地组)的记录:承载订阅 token + 该线路的流量配额/到期;该组所有协议共享
-            String subToken = lineTokens.computeIfAbsent(node.getId(),
-                    nid -> getOrCreateLine(user.getId(), nid, groupLanding, dto.getFlow(), dto.getExpTime()).getSubToken());
+            // 这条线路的记录:承载订阅 token + 该线路的流量配额/到期。
+            // 中转 = 该落地全部协议共享一条;直连 = 只有这一条入站(所以每条直连各一份)。
+            if (!lineTokens.containsKey(thisLineKey)) {
+                lineTokens.put(thisLineKey, getOrCreateLine(user.getId(), in.getNodeId(), in.getLandingId(),
+                        thisInbound, dto.getFlow(), dto.getExpTime()).getSubToken());
+            }
+            String subToken = lineTokens.get(thisLineKey);
             R r = assignOneNoPush(in, node, user, userLimiter, dto.getExpTime(), subToken,
                     busyPortsByNode.computeIfAbsent(node.getId(), k -> new java.util.HashSet<>()));
             if (r.getCode() != 0) {
@@ -776,11 +798,17 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         for (Long nid : affectedNodes) {
             pushNodeSingbox(nid);
         }
-        // 结果里带回这条线路的订阅 token(机器卡分配 = 单机单落地组)
-        String resultToken = (dto.getNodeId() != null)
-                ? lineTokens.computeIfAbsent(dto.getNodeId(),
-                        nid -> getOrCreateLine(user.getId(), nid, groupLanding, dto.getFlow(), dto.getExpTime()).getSubToken())
-                : (lineTokens.isEmpty() ? null : lineTokens.values().iterator().next());
+        // 结果里带回这条线路的订阅 token。
+        // 指定了机器 → 取选中的第一条协议所属的那条线路:中转 = 该落地那条;直连(前端一次只传一条入站)= 那一条。
+        String resultToken = null;
+        if (!inbounds.isEmpty()) {
+            Inbound head = inbounds.get(0);
+            resultToken = lineTokens.get(lineKeyOf(head.getNodeId(), head.getLandingId(),
+                    lineInboundId(head.getLandingId(), head.getId())));
+        }
+        if (resultToken == null && !lineTokens.isEmpty()) {
+            resultToken = lineTokens.values().iterator().next();
+        }
         if (assigned == 0) {
             if (firstError == null && skipped > 0) {
                 // 协议早就分过了 → 这次是续费/改配置(配额和到期已写到线路,限速已重推到已有转发)
@@ -871,10 +899,11 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 continue;
             }
             Long lid = in.getLandingId();
-            String lineKey = in.getNodeId() + "|" + (lid == null ? 0L : lid);
+            Long lineInbound = lineInboundId(lid, in.getId());
+            String lineKey = lineKeyOf(in.getNodeId(), lid, lineInbound);
             Boolean stopped = lineStopped.get(lineKey);
             if (stopped == null) {
-                InboundLine line = getLine(u.getId(), in.getNodeId(), lid);
+                InboundLine line = getLine(u.getId(), in.getNodeId(), lid, lineInbound);
                 stopped = (line != null && line.getStatus() != null && line.getStatus() == 0);
                 lineStopped.put(lineKey, stopped);
             }
@@ -972,10 +1001,11 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 continue;
             }
             Long lid = in.getLandingId();
-            String lineKey = in.getNodeId() + "|" + (lid == null ? 0L : lid);
+            Long lineInbound = lineInboundId(lid, in.getId());
+            String lineKey = lineKeyOf(in.getNodeId(), lid, lineInbound);
             Boolean stopped = lineStopped.get(lineKey);
             if (stopped == null) {
-                InboundLine line = getLine(iu.getUserId(), in.getNodeId(), lid);
+                InboundLine line = getLine(iu.getUserId(), in.getNodeId(), lid, lineInbound);
                 stopped = (line != null && line.getStatus() != null && line.getStatus() == 0);
                 lineStopped.put(lineKey, stopped);
             }
@@ -1355,10 +1385,11 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             // 结果车主停用之后,对方更新订阅照样看得到节点,只是连不上(转发已暂停),
             // 反而像是节点坏了。
             Long lid = in.getLandingId();
-            String lineKey = in.getNodeId() + "|" + (lid == null ? 0L : lid);
+            Long lineInbound = lineInboundId(lid, in.getId());
+            String lineKey = lineKeyOf(in.getNodeId(), lid, lineInbound);
             Boolean stopped = lineStopped.get(lineKey);
             if (stopped == null) {
-                InboundLine line = getLine(iu.getUserId(), in.getNodeId(), lid);
+                InboundLine line = getLine(iu.getUserId(), in.getNodeId(), lid, lineInbound);
                 stopped = (line != null && line.getStatus() != null && line.getStatus() == 0);
                 lineStopped.put(lineKey, stopped);
             }
@@ -1411,9 +1442,10 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             return R.ok(empty);
         }
         List<InboundUser> ius = inboundUserMapper.selectList(new QueryWrapper<InboundUser>().eq("user_id", userId));
-        // 按【线路】= 机器 × 落地组 分组:同一台机器的直连、每个落地各算一条订阅
+        // 按【线路】分组:中转 = 机器 × 落地组(该落地下全部协议一条);
+        // 直连 = 机器 × 入站(每条直连入站各一条订阅、各一份配额/到期)
         java.util.Map<String, java.util.List<InboundUser>> byLine = new java.util.LinkedHashMap<>();
-        java.util.Map<String, long[]> lineKey = new java.util.HashMap<>(); // key -> [nodeId, landingId(0=直连)]
+        java.util.Map<String, long[]> lineKey = new java.util.HashMap<>(); // key -> [nodeId, landingId(0=直连), inboundId(0=无)]
         for (InboundUser iu : ius) {
             if (iu.getStatus() != null && iu.getStatus() == 0) {
                 continue;
@@ -1423,15 +1455,17 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 continue;
             }
             long lid = in.getLandingId() != null ? in.getLandingId() : 0L;
-            String key = in.getNodeId() + "|" + lid;
+            Long lineInbound = lineInboundId(in.getLandingId(), in.getId());
+            String key = lineKeyOf(in.getNodeId(), in.getLandingId(), lineInbound);
             byLine.computeIfAbsent(key, k -> new java.util.ArrayList<>()).add(iu);
-            lineKey.putIfAbsent(key, new long[]{in.getNodeId(), lid});
+            lineKey.putIfAbsent(key, new long[]{in.getNodeId(), lid, lineInbound == null ? 0L : lineInbound});
         }
         SubNames.UserNames names = byLine.isEmpty() ? SubNames.UserNames.EMPTY : nodeNameStore.load(userId);
         for (java.util.Map.Entry<String, java.util.List<InboundUser>> e : byLine.entrySet()) {
             long[] k = lineKey.get(e.getKey());
             Long nodeId = k[0];
             Long landingId = (k[1] == 0L) ? null : k[1];
+            Long lineInbound = (k[2] == 0L) ? null : k[2];
             Node node = nodeMapper.selectById(nodeId);
             String token = null;
             int count = 0;
@@ -1462,11 +1496,14 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             JSONObject line = new JSONObject();
             line.put("nodeId", nodeId);
             line.put("nodeName", node != null ? node.getName() : ("机器#" + nodeId));
-            // landingId 要发给前端:线路的身份是「机器 × 落地」,只有名字的话
-            // 两个同名落地就分不开,前端也没法指定要停哪一条。
+            // landingId / inboundId 都要发给前端:线路的身份是「机器 × 落地」(直连再 × 入站),
+            // 只有名字的话两个同名落地就分不开,前端也没法指定要停哪一条。
             line.put("landingId", landingId);
+            // 直连线路所属入站(中转为 null)。前端拿着它才能对某一条直连做续费/停用/删除。
+            line.put("inboundId", lineInbound);
             line.put("type", landingId != null ? "relay" : "direct");
             line.put("landingName", landingName);
+            // 线路别名仍然按「机器 × 落地」算:同一台机器的直连共用一个别名(和升级前一致)
             String alias = names.line(nodeId, landingId);
             if (alias != null) {
                 if (self) {
@@ -1478,7 +1515,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             }
             line.put("flow", lineFlow); // 该线路已用流量(字节)
             // 该线路自己的配额/到期(线路表);quotaGb=0/null 表示不单独限,只受账号总量约束
-            InboundLine lineRec = getLine(userId, nodeId, landingId);
+            InboundLine lineRec = getLine(userId, nodeId, landingId, lineInbound);
             line.put("quotaGb", lineRec != null ? lineRec.getFlow() : null);
             line.put("lineExpTime", lineRec != null ? lineRec.getExpTime() : null);
             line.put("lineStatus", lineRec != null ? lineRec.getStatus() : 1);
@@ -1501,30 +1538,41 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
     }
 
     /** 只读:取这条线路的记录(没有返回 null) */
-    private InboundLine getLine(Long userId, Long nodeId, Long landingId) {
+    private InboundLine getLine(Long userId, Long nodeId, Long landingId, Long inboundId) {
         com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<InboundLine> lw =
                 new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<InboundLine>()
                         .eq("user_id", userId).eq("node_id", nodeId);
         if (landingId != null) {
+            // 中转:一条线路 = 该落地下全部协议。这一支【一个字都没动】,也不引用新加的 inbound_id 列
             lw.eq("landing_id", landingId);
+        } else if (inboundId != null) {
+            lw.isNull("landing_id").eq("inbound_id", inboundId);
         } else {
-            lw.isNull("landing_id");
+            // 老的「整机直连」线路(升级前留下的、或纯僵尸行):只在明确要它时才查
+            lw.isNull("landing_id").isNull("inbound_id");
         }
         return inboundLineMapper.selectOne(lw.last("limit 1"));
     }
 
     /**
-     * 取/建这条线路(车友 × 机器 × 落地组)的记录。线路承载:订阅 token、流量配额、到期。
+     * 取/建这条线路的记录。线路承载:订阅 token、流量配额、到期。
      * quotaGb / expTime 传 null 表示不改动(只取现有线路);传值则写入。
+     *
+     * 线路身份:中转 = 车友 × 机器 × 落地(landingId 非空,inboundId 恒为空,调用方传 null);
+     * 直连 = 车友 × 机器 × 入站(landingId 为空,inboundId 必传)。
      */
-    private InboundLine getOrCreateLine(Long userId, Long nodeId, Long landingId, Long quotaGb, Long expTime) {
+    private InboundLine getOrCreateLine(Long userId, Long nodeId, Long landingId, Long inboundId,
+                                       Long quotaGb, Long expTime) {
+        Long lineInbound = lineInboundId(landingId, inboundId);
         com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<InboundLine> lw =
                 new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<InboundLine>()
                         .eq("user_id", userId).eq("node_id", nodeId);
         if (landingId != null) {
             lw.eq("landing_id", landingId);
+        } else if (lineInbound != null) {
+            lw.isNull("landing_id").eq("inbound_id", lineInbound);
         } else {
-            lw.isNull("landing_id");
+            lw.isNull("landing_id").isNull("inbound_id");
         }
         InboundLine line = inboundLineMapper.selectOne(lw.last("limit 1"));
         if (line == null) {
@@ -1532,7 +1580,8 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             line.setUserId(userId);
             line.setNodeId(nodeId);
             line.setLandingId(landingId);
-            line.setSubToken(getOrCreateLineSubToken(userId, nodeId, landingId));
+            line.setInboundId(lineInbound);
+            line.setSubToken(getOrCreateLineSubToken(userId, nodeId, landingId, lineInbound));
             line.setFlow(quotaGb);
             line.setExpTime(expTime);
             line.setStatus(1);
@@ -1551,7 +1600,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             changed = true;
         }
         if (line.getSubToken() == null || line.getSubToken().isEmpty()) {
-            line.setSubToken(getOrCreateLineSubToken(userId, nodeId, landingId));
+            line.setSubToken(getOrCreateLineSubToken(userId, nodeId, landingId, lineInbound));
             changed = true;
         }
         if (changed) {
@@ -1563,13 +1612,32 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
     }
 
     /**
-     * 取某车友在某条线路(机器 × 落地组)的订阅 token;没有就生成,回填给他在该组的所有 inbound_user。
-     * landingId=null → 直连组(该机 landing_id IS NULL);非空 → 该落地的中转组。同机直连/各落地各一条 token。
+     * 这条线路是不是按入站分的(直连才是)。中转(有落地)恒为空 —— 一条中转 = 该落地下全部协议。
+     * 所有「线路身份」的地方都要过这一道,免得某个调用漏传 inboundId 把直连又合成一条。
      */
-    private String getOrCreateLineSubToken(Long userId, Long nodeId, Long landingId) {
+    private static Long lineInboundId(Long landingId, Long inboundId) {
+        return landingId != null ? null : inboundId;
+    }
+
+    /** 线路在内存里的 map 键(和数据库的匹配条件同一个口径);中转的键不含入站,和以前一样 */
+    private static String lineKeyOf(Long nodeId, Long landingId, Long inboundId) {
+        if (landingId != null) {
+            return nodeId + "|" + landingId;
+        }
+        return nodeId + "|0|" + (inboundId == null ? 0L : inboundId);
+    }
+
+    /**
+     * 取某车友在某条线路上的订阅 token;没有就生成,回填给他在该线路的所有 inbound_user。
+     * 中转(landingId 非空)→ 该落地下全部协议一条 token(和以前完全一致);
+     * 直连(landingId 为空)→ 只认 inboundId 那一条入站,同机其它直连各有各的 token。
+     */
+    private String getOrCreateLineSubToken(Long userId, Long nodeId, Long landingId, Long inboundId) {
         QueryWrapper<Inbound> qw = new QueryWrapper<Inbound>().eq("node_id", nodeId);
         if (landingId != null) {
             qw.eq("landing_id", landingId);
+        } else if (lineInboundId(landingId, inboundId) != null) {
+            qw.isNull("landing_id").eq("id", lineInboundId(landingId, inboundId));
         } else {
             qw.isNull("landing_id");
         }
@@ -1656,35 +1724,48 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
     // ===== 线路级限速(整条中转一个限速器,不按车友分) =====
 
     /**
-     * 取某条线路(机器 × 落地)的限速规则;没有返回 null。
+     * 取某条线路(机器 × 落地,直连再 × 入站)的限速规则;没有返回 null。
      * landingId 为空 = 这台机器的直连线路(直连没有落地),这时必须用 isNull 查 ——
      * eq("landing_id", null) 生成的是 "landing_id = null",永远匹配不到任何行。
+     *
+     * 【老库的整机直连规则】升级前的直连限速是按机器存的(inbound_id 为空)。
+     * 那种规则现在仍然生效、也仍然显示:先找这条入站自己的规则,找不到就回退到整机的老规则。
+     * 一旦给某条入站设了(或清成 0 之后又设了)自己的规则,回退就被顶掉,此后各入站各管各的。
      */
-    private SpeedLimit lineSpeedRule(Long nodeId, Long landingId) {
+    private SpeedLimit lineSpeedRule(Long nodeId, Long landingId, Long inboundId) {
         if (nodeId == null) {
             return null;
         }
-        QueryWrapper<SpeedLimit> qw = new QueryWrapper<SpeedLimit>().eq("node_id", nodeId);
-        if (landingId == null) {
-            qw.isNull("landing_id");
-        } else {
-            qw.eq("landing_id", landingId);
+        if (landingId != null) {
+            // 中转:一条线路一个限速器(和以前一模一样,不引用新列)
+            return speedLimitService.getOne(new QueryWrapper<SpeedLimit>()
+                    .eq("node_id", nodeId).eq("landing_id", landingId).last("limit 1"));
         }
-        return speedLimitService.getOne(qw.last("limit 1"));
+        if (inboundId != null) {
+            SpeedLimit own = speedLimitService.getOne(new QueryWrapper<SpeedLimit>()
+                    .eq("node_id", nodeId).isNull("landing_id").eq("inbound_id", inboundId).last("limit 1"));
+            if (own != null) {
+                return own;
+            }
+        }
+        return speedLimitService.getOne(new QueryWrapper<SpeedLimit>()
+                .eq("node_id", nodeId).isNull("landing_id").isNull("inbound_id").last("limit 1"));
     }
 
     /**
-     * 把限速器挂到这条线路上所有已存在的转发上(该线路所有车友、所有协议)。
+     * 把限速器挂到这条线路上所有已存在的转发上。
      * limiterId=null 表示解除限速。
-     * landingId 为空 = 直连线路(直连没有落地),同样要 isNull 而不是 eq。
+     * 中转:该落地下全部协议(不变);直连:inboundId 那一条入站(inboundId 为空 = 整机老口径)。
      */
-    private void applyLimiterToLineForwards(Long nodeId, Long landingId, Integer limiterId) {
+    private void applyLimiterToLineForwards(Long nodeId, Long landingId, Long inboundId, Integer limiterId) {
         try {
             QueryWrapper<Inbound> qw = new QueryWrapper<Inbound>().eq("node_id", nodeId);
-            if (landingId == null) {
-                qw.isNull("landing_id");
-            } else {
+            if (landingId != null) {
                 qw.eq("landing_id", landingId);
+            } else if (lineInboundId(landingId, inboundId) != null) {
+                qw.isNull("landing_id").eq("id", lineInboundId(landingId, inboundId));
+            } else {
+                qw.isNull("landing_id");
             }
             List<Inbound> inbounds = this.list(qw);
             for (Inbound in : inbounds) {
@@ -1698,14 +1779,15 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 }
             }
         } catch (Exception e) {
-            log.warn("线路限速应用到转发失败 node=" + nodeId + " landing=" + landingId + ": " + e.getMessage());
+            log.warn("线路限速应用到转发失败 node=" + nodeId + " landing=" + landingId + " inbound=" + inboundId
+                    + ": " + e.getMessage());
         }
     }
 
     @Override
     public R lineStats() {
         // 直连(landing_id 为空)和中转一起返回:直连线路页的「已用流量/已用天数」要用。
-        // 前端按 "机器id-落地id" 取数,直连那条的 key 就是 "机器id-null"。
+        // 直连现在一条入站一条线路,返回里带上 inboundId,前端按「机器id + 落地id + 入站id」取数。
         List<Inbound> inbounds = this.list();
         if (inbounds.isEmpty()) {
             return R.ok(new java.util.ArrayList<>());
@@ -1729,11 +1811,14 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             usedByInbound.merge(iid, v, Long::sum);
         }
 
-        // 同一(机器 × 落地)的多条协议合成一条线路;建立时间取最早那个协议。
-        // 直连(landing_id 为空)的 key 是 "机器id-null",前端也按同样的口径取值。
+        // 同一(机器 × 落地)的多条协议合成一条线路;直连按入站各算一条。建立时间取最早那个协议。
+        java.util.Map<String, Inbound> firstOfLine = new java.util.LinkedHashMap<>();
         java.util.Map<String, long[]> agg = new java.util.LinkedHashMap<>();
         for (Inbound in : inbounds) {
-            String key = in.getNodeId() + "-" + in.getLandingId();
+            Long landingId = in.getLandingId();
+            Long lineInbound = lineInboundId(landingId, in.getId());
+            String key = lineKeyOf(in.getNodeId(), landingId, lineInbound);
+            firstOfLine.putIfAbsent(key, in);
             long[] a = agg.computeIfAbsent(key, k -> new long[]{0L, Long.MAX_VALUE});
             if (in.getCreatedTime() != null && in.getCreatedTime() < a[1]) {
                 a[1] = in.getCreatedTime();
@@ -1746,11 +1831,13 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
         List<java.util.Map<String, Object>> out = new java.util.ArrayList<>();
         for (java.util.Map.Entry<String, long[]> e : agg.entrySet()) {
-            String[] p = e.getKey().split("-");
+            Inbound head = firstOfLine.get(e.getKey());
             java.util.Map<String, Object> m = new java.util.HashMap<>();
-            m.put("nodeId", Long.valueOf(p[0]));
-            // 直连没有落地:原样返回 null,前端拿 "机器id-null" 取这条
-            m.put("landingId", "null".equals(p[1]) ? null : Long.valueOf(p[1]));
+            m.put("nodeId", head.getNodeId());
+            // 直连没有落地:原样返回 null
+            m.put("landingId", head.getLandingId());
+            // 直连线路的身份是「机器 × 入站」;中转返回 null(前端不看)
+            m.put("inboundId", lineInboundId(head.getLandingId(), head.getId()));
             m.put("used", e.getValue()[0]);
             m.put("createdAt", e.getValue()[1] == Long.MAX_VALUE ? null : e.getValue()[1]);
             out.add(m);
@@ -1783,20 +1870,33 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             m.put("id", r.getId());
             m.put("nodeId", r.getNodeId());
             m.put("landingId", r.getLandingId());
+            // 直连的规则按入站区分;老库那批整机直连规则这里是 null,前端会当整机的默认值显示
+            m.put("inboundId", r.getInboundId());
             m.put("speed", r.getSpeed());
             out.add(m);
         }
         return R.ok(out);
     }
 
+    /**
+     * 线路级限速。中转:整条(机器 × 落地)一个(和以前一样);
+     * 直连:按入站,一个直连入站一个 —— inboundId 为空表示老的「整机直连」口径(兼容旧前端/旧调用)。
+     * speed &lt;= 0 解除。
+     */
     @Override
-    public R setLineSpeed(Long nodeId, Long landingId, Integer speedMbps) {
+    public R setLineSpeed(Long nodeId, Long landingId, Long inboundId, Integer speedMbps) {
         if (nodeId == null) {
             return R.err("缺少参数");
         }
         // 直连线路没有落地:前端可能传 null,也可能传 0,统一按「空」处理
         if (landingId != null && landingId <= 0) {
             landingId = null;
+        }
+        if (landingId != null) {
+            inboundId = null; // 中转恒不按入站分
+        }
+        if (inboundId != null && inboundId <= 0) {
+            inboundId = null;
         }
         Node node = nodeMapper.selectById(nodeId);
         if (node == null) {
@@ -1810,11 +1910,24 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 return R.err("落地不存在");
             }
         }
+        // 直连指定了入站:必须是这台机器上的直连协议,别把中转协议当成直连线路来限速
+        Inbound lineInbound = null;
+        if (landingId == null && inboundId != null) {
+            lineInbound = this.getById(inboundId);
+            if (lineInbound == null || lineInbound.getLandingId() != null
+                    || !nodeId.equals(lineInbound.getNodeId())) {
+                return R.err("这条直连协议不存在,或不属于这台机器");
+            }
+        }
         int sp = (speedMbps == null || speedMbps <= 0) ? 0 : speedMbps;
-        SpeedLimit rule = lineSpeedRule(nodeId, landingId);
+        SpeedLimit rule = lineSpeedRule(nodeId, landingId, inboundId);
 
         // 解除:删限速器 + 删规则 + 把转发上的引用清掉
         if (sp == 0) {
+            // 【老库的整机直连规则】它本来就管着这台机器的全部直连入站(升级前的口径),
+            // 解掉它就等于解掉整机的直连限速 —— 不搞「只解一条」的假动作:
+            // 那种做法要么让别的入站失去限速、要么在节点上留下指向不存在限速器的转发。
+            boolean wholeMachineDirect = landingId == null && rule != null && rule.getInboundId() == null;
             if (rule != null) {
                 try {
                     com.admin.common.utils.GostUtil.DeleteLimiters(nodeId, rule.getId().longValue());
@@ -1823,13 +1936,19 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 }
                 speedLimitService.removeById(rule.getId());
             }
-            applyLimiterToLineForwards(nodeId, landingId, null);
+            applyLimiterToLineForwards(nodeId, landingId, wholeMachineDirect ? null : inboundId, null);
             return R.ok();
         }
 
-        if (rule == null) {
+        boolean needNewRule = rule == null
+                // 直连指定了入站,命中的却只是「整机」老规则 → 给这条入站单独立一条,别改老规则(它管着别的入站)
+                || (landingId == null && inboundId != null && rule.getInboundId() == null);
+        if (needNewRule) {
             rule = new SpeedLimit();
-            rule.setName("线路限速 · " + node.getName() + " · " + (landing == null ? "直连" : landing.getName()));
+            // 中转的名字和以前一字不差;直连用协议备注(没有就写协议名),不再千篇一律的「直连」
+            rule.setName(landing != null
+                    ? ("线路限速 · " + node.getName() + " · " + landing.getName())
+                    : lineSpeedName(node, lineInbound));
             rule.setSpeed(sp);
             rule.setMode(0);          // 共享:整条线路一个池
             rule.setTotal(0);
@@ -1837,6 +1956,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             rule.setTunnelName("");
             rule.setNodeId(nodeId);
             rule.setLandingId(landingId);
+            rule.setInboundId(landingId == null ? inboundId : null);
             rule.setStatus(0);
             rule.setCreatedTime(System.currentTimeMillis());
             if (!speedLimitService.save(rule)) {
@@ -1855,21 +1975,34 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             return R.err("限速器已保存,但下发到节点失败(节点可能离线):" + push.getMsg());
         }
 
-        applyLimiterToLineForwards(nodeId, landingId, rule.getId().intValue());
+        applyLimiterToLineForwards(nodeId, landingId, inboundId, rule.getId().intValue());
         return R.ok(rule);
+    }
+
+    /** 线路级限速规则的显示名:中转用落地名,直连用协议备注(没有就写协议名) */
+    private String lineSpeedName(Node node, Inbound lineInbound) {
+        String tail;
+        if (lineInbound == null) {
+            tail = "直连";
+        } else {
+            String remark = lineInbound.getRemark();
+            tail = (remark != null && !remark.trim().isEmpty()) ? remark.trim() : lineInbound.getProtocol();
+        }
+        return "线路限速 · " + (node == null ? "" : node.getName()) + " · " + tail;
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public R updateLine(Long userId, Long nodeId, Long landingId, Long flowGb, Long expTime, Integer speedId) {
+    public R updateLine(Long userId, Long nodeId, Long landingId, Long inboundId, Long flowGb, Long expTime, Integer speedId) {
         if (userId == null || nodeId == null) {
             return R.err("参数不全");
         }
-        InboundLine line = getLine(userId, nodeId, landingId);
+        Long lineInbound = lineInboundId(landingId, inboundId);
+        InboundLine line = getLine(userId, nodeId, landingId, lineInbound);
         if (line == null) {
             return R.err("线路不存在");
         }
-        List<InboundUser> ius = lineInboundUsers(userId, nodeId, landingId);
+        List<InboundUser> ius = lineInboundUsers(userId, nodeId, landingId, lineInbound);
         if (ius.isEmpty()) {
             return R.err("这条线路下没有协议,先去「分配协议」");
         }
@@ -1978,11 +2111,12 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public R setLineStatus(Long userId, Long nodeId, Long landingId, Integer status) {
+    public R setLineStatus(Long userId, Long nodeId, Long landingId, Long inboundId, Integer status) {
         if (userId == null || nodeId == null || status == null) {
             return R.err("参数不全");
         }
-        InboundLine line = getLine(userId, nodeId, landingId);
+        Long lineInbound = lineInboundId(landingId, inboundId);
+        InboundLine line = getLine(userId, nodeId, landingId, lineInbound);
         if (line == null) {
             return R.err("线路不存在");
         }
@@ -1991,7 +2125,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
         // 转发跟着一起停/起:光改线路标记的话订阅里是没了,但对方手上已经导入的
         // 旧链接还能连 —— 端口还开着,gost 照转不误。
-        for (InboundUser iu : lineInboundUsers(userId, nodeId, landingId)) {
+        for (InboundUser iu : lineInboundUsers(userId, nodeId, landingId, lineInbound)) {
             if (iu.getGostForwardId() == null) {
                 continue;
             }
@@ -2002,7 +2136,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                     forwardService.resumeForward(iu.getGostForwardId());
                 }
             } catch (Exception e) {
-                log.warn("线路[" + userId + "/" + nodeId + "/" + landingId + "] 转发["
+                log.warn("线路[" + userId + "/" + nodeId + "/" + landingId + "/" + lineInbound + "] 转发["
                         + iu.getGostForwardId() + "] 状态切换失败: " + e.getMessage());
             }
         }
@@ -2016,11 +2150,12 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public R deleteLine(Long userId, Long nodeId, Long landingId) {
+    public R deleteLine(Long userId, Long nodeId, Long landingId, Long inboundId) {
         if (userId == null || nodeId == null) {
             return R.err("参数不全");
         }
-        List<InboundUser> ius = lineInboundUsers(userId, nodeId, landingId);
+        Long lineInbound = lineInboundId(landingId, inboundId);
+        List<InboundUser> ius = lineInboundUsers(userId, nodeId, landingId, lineInbound);
         if (ius.isEmpty()) {
             return R.err("线路不存在");
         }
@@ -2044,12 +2179,14 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             }
             return R.err("有 " + failed.size() + " 条转发没删掉,线路先保留,请稍后重试:" + String.join(";", failed));
         }
-        InboundLine line = getLine(userId, nodeId, landingId);
+        InboundLine line = getLine(userId, nodeId, landingId, lineInbound);
         if (line != null) {
             inboundLineMapper.deleteById(line.getId());
         }
-        // 这条线路的别名和其下协议的车友名一起清(吞异常,不影响删除)
-        nodeNameStore.deleteUserLine(userId, SubNames.lineKey(nodeId, landingId));
+        // 这条线路的别名和其下协议的车友名一起清(吞异常,不影响删除)。
+        // 【别名仍按机器 × 落地】直连删掉一条入站不一定清别名(同机还有别的直连),交给 clearLineAliasIfEmpty 判;
+        // 这里只在「这台机器的直连一条都不剩」时才清。
+        clearLineAliasIfEmpty(userId, nodeId, landingId);
         for (InboundUser iu : ius) {
             nodeNameStore.deleteUserInbound(userId, iu.getInboundId());
         }
@@ -2101,7 +2238,9 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 continue;
             }
             Long lid = in.getLandingId();
-            String key = SubNames.lineKey(in.getNodeId(), lid);
+            Long lineInbound = lineInboundId(lid, in.getId());
+            // 直连现在一条入站一条线路,弹窗里也就一条入站一组;中转照旧一组 = 该落地下全部协议
+            String key = lineKeyOf(in.getNodeId(), lid, lineInbound);
             Node node = nodeCache.computeIfAbsent(in.getNodeId(), nodeMapper::selectById);
             String nodeName = node != null ? node.getName() : ("机器#" + in.getNodeId());
             String ln = lid == null ? null : landingNameCached(lid, landingNames);
@@ -2111,6 +2250,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 line = new JSONObject(true);
                 line.put("nodeId", in.getNodeId());
                 line.put("landingId", lid);
+                line.put("inboundId", lineInbound);
                 line.put("nodeName", nodeName);
                 line.put("landingName", ln);
                 line.put("alias", alias == null ? "" : alias);
@@ -2269,8 +2409,23 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         }
     }
 
-    /** 该车友在这条线路(机器 × 落地)下的所有协议分配记录 */
+    /**
+     * 该车友在「机器 × 落地」这一组下的所有协议分配记录。
+     * 【注意】直连(landingId 为空)时这里给的是该机器全部直连协议 —— 车友线路别名仍是按机器算的
+     * (别名 ref_key = 机器id|落地id),所以校验别名归属时要用这一层;
+     * 而按【线路】的停用/续费/删除必须用下面带 inboundId 的那个,直连一条入站才是一条线路。
+     */
     private List<InboundUser> lineInboundUsers(Long userId, Long nodeId, Long landingId) {
+        return lineInboundUsers(userId, nodeId, landingId, null, false);
+    }
+
+    /** 该车友在这条【线路】下的所有协议分配记录:中转 = 该落地下全部协议;直连 = inboundId 那一条入站 */
+    private List<InboundUser> lineInboundUsers(Long userId, Long nodeId, Long landingId, Long inboundId) {
+        return lineInboundUsers(userId, nodeId, landingId, inboundId, true);
+    }
+
+    private List<InboundUser> lineInboundUsers(Long userId, Long nodeId, Long landingId, Long inboundId,
+                                               boolean splitDirectByInbound) {
         List<InboundUser> all = inboundUserMapper.selectList(
                 new QueryWrapper<InboundUser>().eq("user_id", userId));
         List<InboundUser> hit = new java.util.ArrayList<>();
@@ -2281,9 +2436,15 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             }
             Long lid = in.getLandingId();
             boolean same = (landingId == null) ? (lid == null) : landingId.equals(lid);
-            if (same) {
-                hit.add(iu);
+            if (!same) {
+                continue;
             }
+            // 直连再按入站分:一条直连入站 = 一条线路
+            if (splitDirectByInbound && landingId == null && inboundId != null
+                    && !inboundId.equals(in.getId())) {
+                continue;
+            }
+            hit.add(iu);
         }
         return hit;
     }

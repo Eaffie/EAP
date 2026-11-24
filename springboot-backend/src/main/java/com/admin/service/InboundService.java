@@ -55,23 +55,26 @@ public interface InboundService extends IService<Inbound> {
     /** 取消某个入站用户 */
     R unassignUser(Long inboundUserId);
 
-    /** 停用(status=0)/ 恢复(status=1)某车友的一条线路(机器 × 落地) */
-    R setLineStatus(Long userId, Long nodeId, Long landingId, Integer status);
+    /** 停用(status=0)/ 恢复(status=1)某车友的一条线路(中转 = 机器 × 落地;直连 = 机器 × 入站) */
+    R setLineStatus(Long userId, Long nodeId, Long landingId, Long inboundId, Integer status);
 
     /** 改一条线路的额度 / 到期 / 限速(续费用;传 null 表示该项不改) */
-    R updateLine(Long userId, Long nodeId, Long landingId, Long flowGb, Long expTime, Integer speedId);
-    /** 线路级限速:把一条中转(机器 × 落地)整体限速,不按车友分。speedMbps<=0 = 解除 */
-    R setLineSpeed(Long nodeId, Long landingId, Integer speedMbps);
+    R updateLine(Long userId, Long nodeId, Long landingId, Long inboundId, Long flowGb, Long expTime, Integer speedId);
+    /**
+     * 线路级限速:中转整条(机器 × 落地)一个;直连按入站(inboundId)各一个,不按车友分。
+     * speedMbps&lt;=0 = 解除。
+     */
+    R setLineSpeed(Long nodeId, Long landingId, Long inboundId, Integer speedMbps);
 
-    /** 所有线路级限速规则(给中转卡片显示当前限速用) */
+    /** 所有线路级限速规则(给直连/中转卡片显示当前限速用) */
     R listLineSpeeds();
 
-    /** 每条中转线路的累计流量 + 建立时间(卡片上显示「多少天用了多少」) */
+    /** 每条线路的累计流量 + 建立时间(卡片上显示「多少天用了多少」);直连按入站各一条 */
     R lineStats();
 
 
     /** 彻底删掉某车友的一条线路:分配记录 + 转发 + 线路本身,端口一并释放 */
-    R deleteLine(Long userId, Long nodeId, Long landingId);
+    R deleteLine(Long userId, Long nodeId, Long landingId, Long inboundId);
 
     /** Clash / Mihomo 订阅(YAML)。和 buildSubscription 同源,只是格式不同 */
     String buildClashSubscription(String token);

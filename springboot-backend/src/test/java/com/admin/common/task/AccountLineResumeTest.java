@@ -55,10 +55,12 @@ class AccountLineResumeTest {
         return u;
     }
 
-    private static InboundLine line(long node, Integer status, Long flowGb, Long exp) {
+    private static InboundLine line(long node, long inbound, Integer status, Long flowGb, Long exp) {
         InboundLine l = new InboundLine();
         l.setUserId(7L);
         l.setNodeId(node);
+        // 直连线路按入站分:线路的 inbound_id 要和它盖住的那条入站对得上
+        l.setInboundId(inbound);
         l.setStatus(status);
         l.setFlow(flowGb);
         l.setExpTime(exp);
@@ -124,9 +126,9 @@ class AccountLineResumeTest {
         ReflectionTestUtils.setField(r, "inboundLineMapper", inboundLineMapper);
         ReflectionTestUtils.setField(r, "accountPauseStore", store);
 
-        // 线路:node1 正常、node2 车主手动停、node3 线路自己跑满
+        // 线路(直连,按入站分):node1/inbound11 正常、node2/inbound12 车主手动停、node3/inbound13 线路自己跑满
         when(inboundLineMapper.selectList(any())).thenReturn(Arrays.asList(
-                line(1, 1, 0L, null), line(2, 0, 0L, null), line(3, 1, 10L, null)));
+                line(1, 11, 1, 0L, null), line(2, 12, 0, 0L, null), line(3, 13, 1, 10L, null)));
         when(inboundUserMapper.selectList(any())).thenReturn(Arrays.asList(
                 iu(11, 101), iu(11, 102), iu(12, 201), iu(13, 301)));
         when(inboundMapper.selectById(11L)).thenReturn(inbound(11, 1));
@@ -228,7 +230,7 @@ class AccountLineResumeTest {
 
     @Test
     void revivedLinesRecordWhenAccountBlockedElseResume() {
-        when(inboundLineMapper.selectBatchIds(any())).thenReturn(Collections.singletonList(line(1, 1, 0L, null)));
+        when(inboundLineMapper.selectBatchIds(any())).thenReturn(Collections.singletonList(line(1, 11, 1, 0L, null)));
         when(userService.getById(7L)).thenReturn(user(1L, 5 * GB, 0L, 1)); // 账号还超着
         assertEquals(0, r.resumeRevivedLines(7L, Collections.singletonList(1L)));
         verify(store).record(argThat(f -> f.getId() == 101L), eq(AccountPauseStore.REASON_LINE_RESET));
@@ -247,6 +249,40 @@ class AccountLineResumeTest {
         assertTrue(AccountLineResume.userTunnelBlocked(1, 100L, 0L, 0L, NOW - 1, NOW));
         assertTrue(AccountLineResume.userTunnelBlocked(1, 1L, GB, 0L, 0L, NOW));
         assertTrue(AccountLineResume.userTunnelBlocked(1, 0L, 0L, 0L, 0L, NOW)); // 老路径 0 也是停
+    }
+
+    /**
+     * 线路键:中转必须和升级前逐字节一样(中转行为不许变),直连按入站分开。
+     */
+    @Test
+    void lineKeySplitsDirectByInboundKeepsRelayUnchanged() {
+        assertEquals("2/7", AccountLineResume.key(2L, 7L, null));
+        assertEquals("2/7", AccountLineResume.key(2L, 7L, 99L)); // 中转哪怕传了入站也不分
+        assertEquals("3/-11", AccountLineResume.key(3L, null, 11L));
+        assertEquals("3/-", AccountLineResume.key(3L, null, null)); // 升级前的老数据:整机一条
+        assertNotEquals(AccountLineResume.key(3L, null, 11L), AccountLineResume.key(3L, null, 12L));
+    }
+
+    /**
+     * 同一台机器上的两条直连入站是两条线路:只复活其中一条时,另一条的转发一动不动。
+     * (改动前它们是同一条线路,这条测试就是防它退回去。)
+     */
+    @Test
+    void sameMachineDirectInboundsAreSeparateLines() {
+        when(userService.getById(7L)).thenReturn(user(0L, 0, 0L, 1));
+        when(inboundUserMapper.selectList(any())).thenReturn(Arrays.asList(iu(21, 301), iu(22, 302)));
+        when(inboundMapper.selectById(21L)).thenReturn(inbound(21, 1));
+        when(inboundMapper.selectById(22L)).thenReturn(inbound(22, 1));
+        Forward f301 = fwd(301, 0, 0), f302 = fwd(302, 0, 0);
+        when(forwardService.list(any()))
+                .thenReturn(Collections.singletonList(f301))
+                .thenReturn(Collections.singletonList(f302));
+        // 只复活 inbound 21 那条线路
+        when(inboundLineMapper.selectBatchIds(any()))
+                .thenReturn(Collections.singletonList(line(1, 21, 1, 0L, null)));
+        assertEquals(1, r.resumeRevivedLines(7L, Collections.singletonList(1L)));
+        verify(forwardService).resumeForwardAsSystem(301L);
+        verify(forwardService, never()).resumeForwardAsSystem(302L);
     }
 
     @Test
