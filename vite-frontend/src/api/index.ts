@@ -90,6 +90,7 @@ export const createInbound = (data: any) => Network.post("/inbound/create", data
 export const oneClickInbound = (nodeId: number, sni?: string) => Network.post("/inbound/one-click", { nodeId, sni });
 export const getInboundList = () => Network.post("/inbound/list");
 export const deleteInbound = (id: number) => Network.post("/inbound/delete", { id });
+export const renameInbound = (id: number, remark: string) => Network.post("/inbound/rename", { id, remark });
 export const deleteInboundsByNode = (nodeId: number, relay?: boolean, landingId?: number) => Network.post("/inbound/delete-by-node", { nodeId, relay, landingId });
 export const assignInboundUser = (data: any) => Network.post("/inbound/assign", data);
 export const assignAllToUser = (data: any) => Network.post("/inbound/assign-all", data);

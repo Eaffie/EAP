@@ -14,6 +14,7 @@ import {
   createInbound,
   oneClickInbound,
   deleteInbound,
+  renameInbound,
   assignAllToUser,
   assignSelf,
   getNodeList,
@@ -73,6 +74,9 @@ export default function InboundPage() {
   // (中转那份仍然是「机器id-落地id」,这里不看)
   const [lineSpeeds, setLineSpeeds] = useState<Record<string, number>>({});
   const [lineStats, setLineStats] = useState<Record<string, { used: number; createdAt: number }>>({});
+
+  // 备注就地编辑:点「备注」列直接改,回车/blur 保存
+  const [remarkEdit, setRemarkEdit] = useState<{ id: number; value: string } | null>(null);
 
   // 「我自己用」:一键开给当前管理员自己,完事直接把订阅链接弹出来
   const [selfLoading, setSelfLoading] = useState<string | null>(null);
@@ -285,6 +289,24 @@ export default function InboundPage() {
     }
   };
 
+  /** 改这条入站的备注(写入 inbound.remark,车友订阅里的节点名会跟着变) */
+  const saveRemark = async (ib: any, value: string) => {
+    const v = (value || "").trim();
+    setRemarkEdit(null);
+    if ((ib.remark || "") === v) return;
+    try {
+      const res: any = await renameInbound(ib.id, v);
+      if (res.code === 0) {
+        setInbounds((p) => p.map((x) => (x.id === ib.id ? { ...x, remark: v } : x)));
+        toast.success("备注已更新");
+      } else {
+        toast.error(res.msg || "保存失败");
+      }
+    } catch {
+      toast.error("保存失败");
+    }
+  };
+
   // ===== 线路级限速(直连 = 机器 × 入站,一条入站一条线路) =====
   const openSpeed = (ib: any) => {
     setSpeedForm({
@@ -374,6 +396,8 @@ export default function InboundPage() {
                 // 直连没有落地:这条线路的身份是「机器 × 入站」,用量/限速都按这一条入站取
                 const st = lineStats[lineKey(ib.nodeId, null, ib.id)] ?? lineStats[lineKey(ib.nodeId, null, null)];
                 const sp = speedOfInbound(ib.nodeId, ib.id);
+                // 正在编辑备注的那一行(拿到非空引用,TS 才能在回调里窄化)
+                const remarkOf = remarkEdit && remarkEdit.id === ib.id ? remarkEdit : null;
                 return (
                   <tr
                     key={ib.id}
@@ -388,7 +412,29 @@ export default function InboundPage() {
                     <td className="px-3 py-2 whitespace-nowrap">
                       <Chip size="sm" variant="flat" color="secondary">{protoLabel(ib.protocol)}</Chip>
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-xs text-default-600">{ib.remark || "-"}</td>
+                    <td className="px-3 py-2 whitespace-nowrap text-xs text-default-600">
+                      {remarkOf ? (
+                        <input
+                          autoFocus
+                          className="bg-transparent border border-primary rounded px-1 py-0.5 text-xs w-44 outline-none"
+                          value={remarkOf.value}
+                          onChange={(e) => setRemarkEdit({ id: ib.id, value: e.target.value })}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") saveRemark(ib, remarkOf.value);
+                            if (e.key === "Escape") setRemarkEdit(null);
+                          }}
+                          onBlur={() => saveRemark(ib, remarkOf.value)}
+                        />
+                      ) : (
+                        <span
+                          className="cursor-pointer border-b border-dashed border-default-300 hover:text-primary"
+                          title="点击修改备注"
+                          onClick={() => setRemarkEdit({ id: ib.id, value: ib.remark || "" })}
+                        >
+                          {ib.remark || "点此编辑"}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 whitespace-nowrap text-right text-xs tabular-nums">
                       {fmtUsed(st?.used || 0)}
                     </td>
