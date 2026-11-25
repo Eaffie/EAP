@@ -87,6 +87,8 @@ export default function RelayPage() {
   const [lineSpeeds, setLineSpeeds] = useState<Record<string, number>>({});
   // 线路用量:key = nodeId-landingId → { used(字节), createdAt(ms) }
   const [lineStats, setLineStats] = useState<Record<string, { used: number; createdAt: number }>>({});
+  // 按机器累加的中转已用流量:直接在这里加,避免再靠 key 拼串去查(踩过一次,查不到就是 0)
+  const [nodeRelayUsed, setNodeRelayUsed] = useState<Record<string, number>>({});
 
   // 分组折叠状态:key = 中转机 id,默认全部收起(页面上一眼看到每台机器几条线 + 累计流量)
   const [expandedNodes, setExpandedNodes] = useState<Record<number, boolean>>({});
@@ -161,6 +163,7 @@ export default function RelayPage() {
       getLineStats().then((r: any) => {
         if (r.code === 0) {
           const m: Record<string, { used: number; createdAt: number }> = {};
+          const perNode: Record<string, number> = {};
           // 后端正常返回驼峰(nodeId/landingId),但实测浏览器里会收到全小写(nodeid/landingid)——
           // 两种都兼容,否则 key 全变成 "undefined-undefined",累计和已用流量永远显示 0
           (r.data || []).forEach((x: any) => {
@@ -171,8 +174,13 @@ export default function RelayPage() {
             }
             const k = lid != null ? `${nid}-${lid}` : `${nid}-null-${x.inboundId ?? x.inboundid ?? null}`;
             m[k] = { used: x.used || 0, createdAt: x.createdAt ?? x.createdat ?? 0 };
+            // 中转行(有落地)才计入机器累计;直连行不算
+            if (lid != null) {
+              perNode[nid] = (perNode[nid] || 0) + Number(x.used || 0);
+            }
           });
           setLineStats(m);
+          setNodeRelayUsed(perNode);
         }
       }).catch(() => {});
       getLineSpeeds().then((r: any) => {
@@ -485,10 +493,6 @@ export default function RelayPage() {
       lines: lids.map((lid) => ({ landingId: lid, inbounds: relayIbs.filter((ib) => ib.landingId === lid) })),
     });
   });
-  // 这台机器的中转累计流量 = 它每条线(机器 × 落地)的已用之和
-  const groupUsed = (nodeId: any, lines: { landingId: any }[]) =>
-    lines.reduce((s, ln) => s + (lineStats[`${nodeId}-${ln.landingId}`]?.used || 0), 0);
-
   // 没挂到任何机器的落地(手工建的、清空中转后剩下的)
   const unusedLandings = landings.filter((l) => usageOf(l.id).count === 0);
 
@@ -542,7 +546,7 @@ export default function RelayPage() {
                   <span className="font-semibold text-sm">🖥️ {n.name}</span>
                   <Chip size="sm" variant="flat" color={online ? "success" : "default"}>{online ? "在线" : "离线"}</Chip>
                   <span className="text-xs text-default-500">{g.lines.length} 条线</span>
-                  <span className="text-xs text-default-400">· 累计 {fmtUsed(groupUsed(n.id, g.lines))}</span>
+                  <span className="text-xs text-default-400">· 累计 {fmtUsed(Number(nodeRelayUsed[String(n.id)] || 0))}</span>
                   <span className="ml-auto text-xs text-default-500">{open ? "收起" : "展开"}</span>
                 </button>
 
