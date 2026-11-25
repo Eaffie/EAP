@@ -161,8 +161,16 @@ export default function RelayPage() {
       getLineStats().then((r: any) => {
         if (r.code === 0) {
           const m: Record<string, { used: number; createdAt: number }> = {};
+          // 后端正常返回驼峰(nodeId/landingId),但实测浏览器里会收到全小写(nodeid/landingid)——
+          // 两种都兼容,否则 key 全变成 "undefined-undefined",累计和已用流量永远显示 0
           (r.data || []).forEach((x: any) => {
-            m[`${x.nodeId}-${x.landingId}`] = { used: x.used || 0, createdAt: x.createdAt || 0 };
+            const nid = x.nodeId ?? x.nodeid;
+            const lid = x.landingId ?? x.landingid;
+            if (nid == null) {
+              return;
+            }
+            const k = lid != null ? `${nid}-${lid}` : `${nid}-null-${x.inboundId ?? x.inboundid ?? null}`;
+            m[k] = { used: x.used || 0, createdAt: x.createdAt ?? x.createdat ?? 0 };
           });
           setLineStats(m);
         }
@@ -170,7 +178,14 @@ export default function RelayPage() {
       getLineSpeeds().then((r: any) => {
         if (r.code === 0) {
           const m: Record<string, number> = {};
-          (r.data || []).forEach((x: any) => { m[`${x.nodeId}-${x.landingId}`] = x.speed || 0; });
+          (r.data || []).forEach((x: any) => {
+            const nid = x.nodeId ?? x.nodeid;
+            const lid = x.landingId ?? x.landingid;
+            if (nid == null) {
+              return;
+            }
+            m[lid != null ? `${nid}-${lid}` : `${nid}-null-${x.inboundId ?? x.inboundid ?? null}`] = x.speed || 0;
+          });
           setLineSpeeds(m);
         }
       }).catch(() => {});
