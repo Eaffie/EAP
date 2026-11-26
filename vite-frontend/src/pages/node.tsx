@@ -631,16 +631,16 @@ export default function NodePage() {
     }
   };
 
-  // 网速 / 流量渲染成「数字 + 单位」两段:数字右对齐、单位定宽,
-  // 这样上传/下载/上行/下行四列的数字左端和单位左端都各成一条线,好一眼比大小
-  const sizeCell = (text: string) => {
+  // 速度 / 流量渲染成「数字 + 单位」两段:数字定宽右对齐、单位定宽左对齐,
+  // 这样上传/下载/上行/下行 四个数字上下左右都对齐,一眼能比大小(列表和卡片共用)
+  const sizeCell = (text: string, tone = '') => {
     const cut = text.lastIndexOf(' ');
     const num = cut < 0 ? text : text.slice(0, cut);
     const unit = cut < 0 ? '' : text.slice(cut + 1);
     return (
-      <span className="inline-flex items-baseline justify-end">
-        <span className="w-14 text-right font-mono tabular-nums text-xs">{num}</span>
-        <span className="w-9 pl-1 text-left text-[11px] text-default-400">{unit}</span>
+      <span className="inline-flex items-baseline">
+        <span className={`w-16 text-right font-mono tabular-nums text-xs ${tone}`}>{num}</span>
+        <span className="w-8 pl-1 text-left text-[11px] text-default-400">{unit}</span>
       </span>
     );
   };
@@ -1215,7 +1215,7 @@ export default function NodePage() {
               return (
               <Card 
                 key={node.id} 
-                className="w-fit max-w-[21rem] shadow-sm border border-divider hover:shadow-md transition-shadow duration-200"
+                className="w-fit max-w-[25rem] shadow-sm border border-divider hover:shadow-md transition-shadow duration-200"
               >
                 <CardHeader className="pb-1 pt-3 px-3">
                   <div className="flex justify-between items-start w-full gap-2">
@@ -1293,9 +1293,9 @@ export default function NodePage() {
                       </div>
                     )
                   )}
-                  {/* CPU / 内存:标签 + 窄条(w-12)+ 百分比 三者贴在一起,两组之间 gap-6 拉开 */}
+                  {/* CPU / 内存:标签 + 窄条(w-12)+ 百分比 三者紧贴(组内 gap-1),两组之间 gap-6 拉开 */}
                   <div className="flex items-center gap-6 mb-2 text-xs">
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1">
                       <span className="shrink-0 text-default-500">CPU</span>
                       <Progress
                         value={usageValue(node, 'cpu')}
@@ -1304,9 +1304,9 @@ export default function NodePage() {
                         aria-label="CPU使用率"
                         classNames={{ base: 'w-12 shrink-0', track: 'h-1.5' }}
                       />
-                      <span className="w-12 shrink-0 text-right font-mono tabular-nums">{usageText(node, 'cpu')}</span>
+                      <span className="w-11 shrink-0 text-right font-mono tabular-nums">{usageText(node, 'cpu')}</span>
                     </div>
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1">
                       <span className="shrink-0 text-default-500">内存</span>
                       <Progress
                         value={usageValue(node, 'memory')}
@@ -1315,34 +1315,32 @@ export default function NodePage() {
                         aria-label="内存使用率"
                         classNames={{ base: 'w-12 shrink-0', track: 'h-1.5' }}
                       />
-                      <span className="w-12 shrink-0 text-right font-mono tabular-nums">{usageText(node, 'memory')}</span>
+                      <span className="w-11 shrink-0 text-right font-mono tabular-nums">{usageText(node, 'memory')}</span>
                     </div>
                   </div>
 
-                  {/* 上传 / 下载:一行小字(原来两块大方块) */}
-                  <div className="flex items-center gap-3 text-xs mb-1">
-                    <span className="font-mono tabular-nums text-default-600">
-                      ↑ {sys ? formatSpeed(sys.uploadSpeed) : '-'}
+                  {/* 上传 / 下载:和下面流量行同一套结构 —— 定宽标签 + 定宽数字 + 单位,
+                      两行的标签列宽一致,所以 上传/下载/上行/下行 四个数字上下左右都对齐 */}
+                  <div className="flex flex-wrap items-center gap-4 text-xs mb-1">
+                    <span className="flex items-center gap-1">
+                      <span className="inline-block w-8 text-default-500">上传</span>
+                      <span className="text-default-600">{sizeCell(sys ? formatSpeed(sys.uploadSpeed) : '-')}</span>
                     </span>
-                    <span className="font-mono tabular-nums text-default-600">
-                      ↓ {sys ? formatSpeed(sys.downloadSpeed) : '-'}
+                    <span className="flex items-center gap-1">
+                      <span className="inline-block w-8 text-default-500">下载</span>
+                      <span className="text-default-600">{sizeCell(sys ? formatSpeed(sys.downloadSpeed) : '-')}</span>
                     </span>
                   </div>
 
-                  {/* 上下行流量 + 版本:全部靠左紧凑排(不用 justify-between,版本不往右推);
-                      流量数字定宽右对齐,GB/TB 竖着对齐 */}
+                  {/* 上下行流量 + 版本:全部靠左紧凑排(不用 justify-between,版本不往右推) */}
                   <div className="flex flex-wrap items-center gap-4 text-xs mb-2.5">
                     <span className="flex items-center gap-1">
-                      <span className="text-default-500">上行</span>
-                      <span className="inline-block w-16 text-right font-mono tabular-nums text-primary">
-                        {sys ? formatTraffic(sys.uploadTraffic) : '-'}
-                      </span>
+                      <span className="inline-block w-8 text-default-500">上行</span>
+                      <span className="text-primary">{sizeCell(sys ? formatTraffic(sys.uploadTraffic) : '-')}</span>
                     </span>
                     <span className="flex items-center gap-1">
-                      <span className="text-default-500">下行</span>
-                      <span className="inline-block w-16 text-right font-mono tabular-nums text-success">
-                        {sys ? formatTraffic(sys.downloadTraffic) : '-'}
-                      </span>
+                      <span className="inline-block w-8 text-default-500">下行</span>
+                      <span className="text-success">{sizeCell(sys ? formatTraffic(sys.downloadTraffic) : '-')}</span>
                     </span>
                     <span className="flex items-center gap-1 text-default-500">
                       版本 <span className="font-mono text-foreground">{node.version || '未知'}</span>
