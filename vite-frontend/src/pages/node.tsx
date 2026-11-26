@@ -8,6 +8,7 @@ import { Chip } from "@heroui/chip";
 import { Switch } from "@heroui/switch";
 import { Autocomplete, AutocompleteItem } from "@heroui/autocomplete";
 import { Select, SelectItem } from "@heroui/select";
+import { Dropdown, DropdownTrigger, DropdownMenu, DropdownItem } from "@heroui/dropdown";
 import { Spinner } from "@heroui/spinner";
 import { Alert } from "@heroui/alert";
 import { Progress } from "@heroui/progress";
@@ -145,10 +146,6 @@ export default function NodePage() {
   });
   // 搜索框:按机器名 / IP 实时过滤,不持久化
   const [search, setSearch] = useState('');
-  // 列表视图里的「⋯」菜单:开的是哪台机器 + 面板贴在哪。
-  // 用 fixed 定位(而不是 td 里 absolute):表格外层是 overflow-x-auto,
-  // 里面的绝对定位面板会被裁掉,贴到视口上就没这问题。
-  const [rowMenu, setRowMenu] = useState<{ node: Node; top: number; left: number } | null>(null);
 
   // 「重推配置」按机器跑(整机恢复),存正在跑的那台机器 id
   const [repushing, setRepushing] = useState<number | null>(null);
@@ -578,46 +575,52 @@ export default function NodePage() {
     }
   }, [viewMode]);
 
-  // 打开列表里的「⋯」菜单:贴在按钮右下,空间不够就往上 / 往左翻
-  const openRowMenu = (node: Node, e: { currentTarget: HTMLElement }) => {
-    if (rowMenu && rowMenu.node.id === node.id) {
-      setRowMenu(null);
-      return;
+  // 卡片右上角 IPv6 小字:一眼看出这台机器到底有没有 IPv6(全量信息在 title 里)
+  const v6Short = (node: Node): string => {
+    const addr = (node.serverIpv6 || '').trim();
+    if (node.ipv6Dual === 1) {
+      if (!addr) return 'v6 无公网地址';
+      return `v6 ${addr.length > 20 ? `${addr.slice(0, 20)}…` : addr}`;
     }
-    const r = e.currentTarget.getBoundingClientRect();
-    const W = 176;  // 面板宽度(w-40 160px)+ 余量
-    const H = 240;  // 面板高度估个够:标题 + 5 个动作
-    let left = Math.max(r.right, W + 8);
-    if (left > window.innerWidth - 8) left = window.innerWidth - 8;
-    let top = r.bottom + 4;
-    if (top + H > window.innerHeight - 8) top = Math.max(8, r.top - 4 - H);
-    setRowMenu({ node, top, left });
+    return 'v6 未开启';
   };
 
-  // 点面板外面 / 滚动 / 按 Esc 都收起来
-  useEffect(() => {
-    if (!rowMenu) return;
-    const onPointerDown = (e: MouseEvent) => {
-      const t = e.target as HTMLElement | null;
-      // 点触发按钮或面板本身不算「外面」(点按钮要能切换开关)
-      if (t && t.closest('[data-node-menu]')) return;
-      setRowMenu(null);
-    };
-    const close = () => setRowMenu(null);
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setRowMenu(null);
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKey);
-    window.addEventListener('scroll', close, true);
-    window.addEventListener('resize', close);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKey);
-      window.removeEventListener('scroll', close, true);
-      window.removeEventListener('resize', close);
-    };
-  }, [rowMenu]);
+  // 列表里的「⋯」菜单分发:key → 原来那些 handler(handler 本身一个没改)
+  const runRowAction = (key: string, node: Node) => {
+    switch (key) {
+      case 'monitor':
+        setMonitorNode(node);
+        break;
+      case 'repush':
+        handleRepush(node);
+        break;
+      case 'point':
+        openPoint(node);
+        break;
+      case 'ipv6':
+        setIpv6Confirm({ node, enable: node.ipv6Dual !== 1 });
+        break;
+      case 'delete':
+        handleDelete(node);
+        break;
+      default:
+        break;
+    }
+  };
+
+  // 网速 / 流量渲染成「数字 + 单位」两段:数字右对齐、单位定宽,
+  // 这样上传/下载/上行/下行四列的数字左端和单位左端都各成一条线,好一眼比大小
+  const sizeCell = (text: string) => {
+    const cut = text.lastIndexOf(' ');
+    const num = cut < 0 ? text : text.slice(0, cut);
+    const unit = cut < 0 ? '' : text.slice(cut + 1);
+    return (
+      <span className="inline-flex items-baseline justify-end">
+        <span className="w-14 text-right font-mono tabular-nums text-xs">{num}</span>
+        <span className="w-9 pl-1 text-left text-[11px] text-default-400">{unit}</span>
+      </span>
+    );
+  };
 
   // 验证IP地址格式
   const validateIp = (ip: string): boolean => {
@@ -1067,7 +1070,8 @@ export default function NodePage() {
             没有匹配的转发机(换个机器名或 IP 试试)
           </div>
         ) : viewMode === VIEW_LIST ? (
-          /* 列表视图:一行一台机器。列和 relay.tsx 的表格一个样式(斑马纹 / border-t / whitespace-nowrap) */
+          /* 列表视图:一行一台机器。列和 relay.tsx 的表格一个样式(斑马纹 / border-t / whitespace-nowrap)。
+             上传/下载/上行/下行拆成四列,数字右对齐 + 单位定宽,方便竖着一列比大小 */
           <div className="overflow-x-auto rounded-xl border border-default-200">
             <table className="w-full text-sm border-collapse">
               <thead>
@@ -1077,8 +1081,10 @@ export default function NodePage() {
                   <th className="text-left font-medium px-3 py-2 whitespace-nowrap">IP</th>
                   <th className="text-right font-medium px-3 py-2 whitespace-nowrap">CPU</th>
                   <th className="text-right font-medium px-3 py-2 whitespace-nowrap">内存</th>
-                  <th className="text-left font-medium px-3 py-2 whitespace-nowrap">上传/下载</th>
-                  <th className="text-right font-medium px-3 py-2 whitespace-nowrap">上行/下行</th>
+                  <th className="text-right font-medium px-3 py-2 whitespace-nowrap">上传</th>
+                  <th className="text-right font-medium px-3 py-2 whitespace-nowrap">下载</th>
+                  <th className="text-right font-medium px-3 py-2 whitespace-nowrap">上行</th>
+                  <th className="text-right font-medium px-3 py-2 whitespace-nowrap">下行</th>
                   <th className="text-left font-medium px-3 py-2 whitespace-nowrap">版本</th>
                   <th className="text-right font-medium px-3 py-2 whitespace-nowrap">操作</th>
                 </tr>
@@ -1111,14 +1117,12 @@ export default function NodePage() {
                       <td className="px-3 py-2 whitespace-nowrap font-mono text-xs text-default-600" title={node.ip || ''}>
                         {nodeMainIp(node)}{extraIp > 0 ? ` +${extraIp}` : ''}
                       </td>
-                      <td className="px-3 py-2 whitespace-nowrap text-right text-xs tabular-nums">{usageText(node, 'cpu')}</td>
-                      <td className="px-3 py-2 whitespace-nowrap text-right text-xs tabular-nums">{usageText(node, 'memory')}</td>
-                      <td className="px-3 py-2 whitespace-nowrap font-mono text-xs text-default-600">
-                        ↑{sys ? formatSpeed(sys.uploadSpeed) : '-'} ↓{sys ? formatSpeed(sys.downloadSpeed) : '-'}
-                      </td>
-                      <td className="px-3 py-2 whitespace-nowrap text-right text-xs tabular-nums">
-                        {sys ? `${formatTraffic(sys.uploadTraffic)} / ${formatTraffic(sys.downloadTraffic)}` : '-'}
-                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap text-right font-mono text-xs tabular-nums">{usageText(node, 'cpu')}</td>
+                      <td className="px-3 py-2 whitespace-nowrap text-right font-mono text-xs tabular-nums">{usageText(node, 'memory')}</td>
+                      <td className="px-3 py-2 whitespace-nowrap text-right">{sizeCell(sys ? formatSpeed(sys.uploadSpeed) : '-')}</td>
+                      <td className="px-3 py-2 whitespace-nowrap text-right">{sizeCell(sys ? formatSpeed(sys.downloadSpeed) : '-')}</td>
+                      <td className="px-3 py-2 whitespace-nowrap text-right">{sizeCell(sys ? formatTraffic(sys.uploadTraffic) : '-')}</td>
+                      <td className="px-3 py-2 whitespace-nowrap text-right">{sizeCell(sys ? formatTraffic(sys.downloadTraffic) : '-')}</td>
                       <td className="px-3 py-2 whitespace-nowrap text-xs font-mono">{node.version || '未知'}</td>
                       <td className="px-3 py-2 whitespace-nowrap">
                         <span className="flex items-center justify-end gap-1">
@@ -1142,17 +1146,33 @@ export default function NodePage() {
                           >
                             编辑
                           </Button>
-                          {/* 「⋯」= 其余动作:监控 / 重推配置 / 指向这台机器 / IPv6 / 删除 */}
-                          <span
-                            data-node-menu="1"
-                            className="inline-flex"
-                            title="更多操作"
-                            onClick={(e) => openRowMenu(node, e)}
-                          >
-                            <Button size="sm" variant="flat" className="min-w-0 h-7 px-2 text-xs" aria-label="更多操作">
-                              ⋯
-                            </Button>
-                          </span>
+                          {/* 其余动作:监控 / 重推配置 / 指向这台机器 / IPv6 / 删除。
+                              用 HeroUI Dropdown(portal 渲染 + React Aria 定位/收起),
+                              比自己写 fixed 面板稳:不会被表格的 overflow 裁掉,也不会被自己的
+                              点击外部监听抢掉那次点击 */}
+                          <Dropdown placement="bottom-end">
+                            <DropdownTrigger>
+                              <Button size="sm" variant="flat" className="min-w-0 h-7 px-2 text-xs" aria-label="更多操作">
+                                ⋯
+                              </Button>
+                            </DropdownTrigger>
+                            <DropdownMenu
+                              aria-label={`${node.name} 的更多操作`}
+                              onAction={(key) => runRowAction(String(key), node)}
+                            >
+                              <DropdownItem key="monitor" className="text-secondary">监控</DropdownItem>
+                              <DropdownItem key="repush" className="text-warning">重推配置</DropdownItem>
+                              <DropdownItem key="point" className="text-primary">指向这台机器</DropdownItem>
+                              <DropdownItem
+                                key="ipv6"
+                                className={node.ipv6Dual === 1 ? 'text-warning' : 'text-primary'}
+                                isDisabled={node.canSwitchListen === false}
+                              >
+                                {node.ipv6Dual === 1 ? '关闭 IPv6' : '开启 IPv6'}
+                              </DropdownItem>
+                              <DropdownItem key="delete" color="danger" className="text-danger">删除</DropdownItem>
+                            </DropdownMenu>
+                          </Dropdown>
                         </span>
                       </td>
                     </tr>
@@ -1181,28 +1201,37 @@ export default function NodePage() {
                         {nodeMainIp(node)}{extraIp > 0 ? ` +${extraIp}` : ''}
                       </p>
                     </div>
-                    <div className="flex items-center gap-1 shrink-0">
-                      <Chip 
-                        color={node.connectionStatus === 'online' ? 'success' : 'danger'} 
-                        variant="flat" 
-                        size="sm"
-                        className="text-xs"
+                    <div className="flex flex-col items-end gap-0.5 shrink-0">
+                      <div className="flex items-center gap-1">
+                        <Chip 
+                          color={node.connectionStatus === 'online' ? 'success' : 'danger'} 
+                          variant="flat" 
+                          size="sm"
+                          className="text-xs"
+                        >
+                          {node.connectionStatus === 'online' ? '在线' : '离线'}
+                        </Chip>
+                        {/* IPv6 从原来的大方块降级成标题栏上的小 Chip;点了还是走原来那个确认框 */}
+                        <Button
+                          size="sm"
+                          variant="flat"
+                          color={v6on ? 'success' : 'default'}
+                          className="min-w-0 min-h-6 h-6 px-2 text-[11px] gap-0.5"
+                          isDisabled={node.canSwitchListen === false}
+                          isLoading={node.ipv6Loading}
+                          title={ipv6Hint(node)}
+                          onPress={() => setIpv6Confirm({ node, enable: !v6on })}
+                        >
+                          IPv6<span className="text-[9px] leading-none">{v6on ? '●' : '○'}</span>
+                        </Button>
+                      </div>
+                      {/* 有没有 IPv6 要一眼看出来:开了显示地址,没地址 / 没开各说各的(全量信息在 Chip 的 title 里) */}
+                      <div
+                        className="max-w-[11rem] truncate text-[10px] text-default-500"
+                        title={node.serverIpv6 || (node.reportedIpv6 || []).filter(Boolean).join('、') || '这台机器没有公网 IPv6'}
                       >
-                        {node.connectionStatus === 'online' ? '在线' : '离线'}
-                      </Chip>
-                      {/* IPv6 从原来的大方块降级成标题栏上的小 Chip;点了还是走原来那个确认框 */}
-                      <Button
-                        size="sm"
-                        variant="flat"
-                        color={v6on ? 'success' : 'default'}
-                        className="min-w-0 min-h-6 h-6 px-2 text-[11px] gap-0.5"
-                        isDisabled={node.canSwitchListen === false}
-                        isLoading={node.ipv6Loading}
-                        title={ipv6Hint(node)}
-                        onPress={() => setIpv6Confirm({ node, enable: !v6on })}
-                      >
-                        IPv6<span className="text-[9px] leading-none">{v6on ? '●' : '○'}</span>
-                      </Button>
+                        {v6Short(node)}
+                      </div>
                     </div>
                   </div>
                 </CardHeader>
@@ -1239,29 +1268,29 @@ export default function NodePage() {
                       </div>
                     )
                   )}
-                  {/* CPU / 内存:一行两个细进度条 + 百分比(原来两块大方块) */}
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="flex flex-1 min-w-0 items-center gap-1.5 text-xs">
-                      <span className="text-default-500 shrink-0">CPU</span>
-                      <span className="w-11 shrink-0 text-right font-mono tabular-nums">{usageText(node, 'cpu')}</span>
+                  {/* CPU / 内存:标签 + 窄条(w-12)+ 百分比 三者贴在一起,两组之间 gap-6 拉开 */}
+                  <div className="flex items-center gap-6 mb-2 text-xs">
+                    <div className="flex items-center gap-1.5">
+                      <span className="shrink-0 text-default-500">CPU</span>
                       <Progress
                         value={usageValue(node, 'cpu')}
                         color={getProgressColor(usageValue(node, 'cpu'), !online)}
                         size="sm"
                         aria-label="CPU使用率"
-                        classNames={{ base: 'flex-1 w-auto', track: 'h-1.5' }}
+                        classNames={{ base: 'w-12 shrink-0', track: 'h-1.5' }}
                       />
+                      <span className="w-12 shrink-0 text-right font-mono tabular-nums">{usageText(node, 'cpu')}</span>
                     </div>
-                    <div className="flex flex-1 min-w-0 items-center gap-1.5 text-xs">
-                      <span className="text-default-500 shrink-0">内存</span>
-                      <span className="w-11 shrink-0 text-right font-mono tabular-nums">{usageText(node, 'memory')}</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="shrink-0 text-default-500">内存</span>
                       <Progress
                         value={usageValue(node, 'memory')}
                         color={getProgressColor(usageValue(node, 'memory'), !online)}
                         size="sm"
                         aria-label="内存使用率"
-                        classNames={{ base: 'flex-1 w-auto', track: 'h-1.5' }}
+                        classNames={{ base: 'w-12 shrink-0', track: 'h-1.5' }}
                       />
+                      <span className="w-12 shrink-0 text-right font-mono tabular-nums">{usageText(node, 'memory')}</span>
                     </div>
                   </div>
 
@@ -1275,37 +1304,43 @@ export default function NodePage() {
                     </span>
                   </div>
 
-                  {/* 上下行流量 + 版本:挤成一行小字 */}
+                  {/* 上下行流量 + 版本:同一行小字,流量数字定宽右对齐(GB 列竖着对齐) */}
                   <div className="flex items-center justify-between gap-2 text-xs mb-2.5">
                     <span className="min-w-0 truncate">
-                      <span className="text-default-500">上行 </span>
-                      <span className="font-mono tabular-nums text-primary">{sys ? formatTraffic(sys.uploadTraffic) : '-'}</span>
-                      <span className="text-default-500 ml-2">下行 </span>
-                      <span className="font-mono tabular-nums text-success">{sys ? formatTraffic(sys.downloadTraffic) : '-'}</span>
+                      <span className="text-default-500">上行</span>
+                      <span className="ml-1 inline-block w-[4.5rem] text-right font-mono tabular-nums text-primary">
+                        {sys ? formatTraffic(sys.uploadTraffic) : '-'}
+                      </span>
+                      <span className="ml-2 text-default-500">下行</span>
+                      <span className="ml-1 inline-block w-[4.5rem] text-right font-mono tabular-nums text-success">
+                        {sys ? formatTraffic(sys.downloadTraffic) : '-'}
+                      </span>
                     </span>
                     <span className="shrink-0 text-default-500">
                       版本 <span className="font-mono">{node.version || '未知'}</span>
                     </span>
                   </div>
 
-                  {/* 操作按钮:6 个动作全平铺,2 行 × 3 列(顺序 安装命令/编辑/监控 → 重推配置/指向这台机器/删除) */}
-                  <div className="grid grid-cols-3 gap-1.5">
+                  {/* 操作按钮:6 个动作,文案压到 2 个字,宽度各自按文字自适应(不等于分铺满,右下会空出来) */}
+                  <div className="flex flex-wrap gap-1.5">
                     <Button
                       size="sm"
                       variant="flat"
                       color="success"
+                      title="安装命令"
                       onPress={() => handleCopyInstallCommand(node)}
                       isLoading={node.copyLoading}
-                      className="min-w-0 min-h-7 h-7 px-1 text-xs"
+                      className="min-h-7 h-7 px-2 text-xs"
                     >
-                      安装命令
+                      安装
                     </Button>
                     <Button
                       size="sm"
                       variant="flat"
                       color="primary"
+                      title="编辑"
                       onPress={() => handleEdit(node)}
-                      className="min-w-0 min-h-7 h-7 px-1 text-xs"
+                      className="min-h-7 h-7 px-2 text-xs"
                     >
                       编辑
                     </Button>
@@ -1313,8 +1348,9 @@ export default function NodePage() {
                       size="sm"
                       variant="flat"
                       color="secondary"
+                      title="监控"
                       onPress={() => setMonitorNode(node)}
-                      className="min-w-0 min-h-7 h-7 px-1 text-xs"
+                      className="min-h-7 h-7 px-2 text-xs"
                     >
                       监控
                     </Button>
@@ -1324,28 +1360,31 @@ export default function NodePage() {
                       size="sm"
                       variant="flat"
                       color="warning"
+                      title="重推配置"
                       onPress={() => handleRepush(node)}
                       isLoading={repushing === node.id}
-                      className="min-w-0 min-h-7 h-7 px-1 text-xs"
+                      className="min-h-7 h-7 px-2 text-xs"
                     >
-                      重推配置
+                      重推
                     </Button>
                     {/* 换机器/换 IP 时,直接把「连接域名」的 A 记录指到这台机器,不用去 Cloudflare 网页改 */}
                     <Button
                       size="sm"
                       variant="flat"
                       color="primary"
+                      title="指向这台机器"
                       onPress={() => openPoint(node)}
-                      className="min-w-0 min-h-7 h-7 px-1 text-xs"
+                      className="min-h-7 h-7 px-2 text-xs"
                     >
-                      指向这台机器
+                      指向
                     </Button>
                     <Button
                       size="sm"
                       variant="flat"
                       color="danger"
+                      title="删除"
                       onPress={() => handleDelete(node)}
-                      className="min-w-0 min-h-7 h-7 px-1 text-xs"
+                      className="min-h-7 h-7 px-2 text-xs"
                     >
                       删除
                     </Button>
@@ -1354,66 +1393,6 @@ export default function NodePage() {
               </Card>
               );
             })}
-          </div>
-        )}
-
-        {/* 列表视图的「⋯」菜单:放不进这一行的动作都在这(监控 / 重推配置 / 指向这台机器 / IPv6 / 删除)。
-            用 fixed 而不是表格里的 absolute —— 表格外层是 overflow-x-auto,absolute 会被裁掉;
-            点面板外面 / 滚动 / Esc 都关(见上面那个 useEffect) */}
-        {rowMenu && (
-          <div
-            data-node-menu="1"
-            className="fixed z-50 w-40 flex flex-col gap-0.5 rounded-lg border border-default-200 bg-content1 p-1 shadow-lg"
-            style={{ top: rowMenu.top, left: rowMenu.left, transform: 'translateX(-100%)' }}
-          >
-            <div className="truncate px-2 py-1 text-[11px] text-default-400">🖥 {rowMenu.node.name}</div>
-            <Button
-              size="sm"
-              variant="flat"
-              color="secondary"
-              className="justify-start min-h-7 h-7 px-2 text-xs"
-              onPress={() => { const n = rowMenu.node; setRowMenu(null); setMonitorNode(n); }}
-            >
-              监控
-            </Button>
-            <Button
-              size="sm"
-              variant="flat"
-              color="warning"
-              className="justify-start min-h-7 h-7 px-2 text-xs"
-              onPress={() => { const n = rowMenu.node; setRowMenu(null); handleRepush(n); }}
-            >
-              重推配置
-            </Button>
-            <Button
-              size="sm"
-              variant="flat"
-              color="primary"
-              className="justify-start min-h-7 h-7 px-2 text-xs"
-              onPress={() => { const n = rowMenu.node; setRowMenu(null); openPoint(n); }}
-            >
-              指向这台机器
-            </Button>
-            <Button
-              size="sm"
-              variant="flat"
-              color={rowMenu.node.ipv6Dual === 1 ? 'warning' : 'primary'}
-              className="justify-start min-h-7 h-7 px-2 text-xs"
-              isDisabled={rowMenu.node.canSwitchListen === false}
-              title={ipv6Hint(rowMenu.node)}
-              onPress={() => { const n = rowMenu.node; setRowMenu(null); setIpv6Confirm({ node: n, enable: n.ipv6Dual !== 1 }); }}
-            >
-              {rowMenu.node.ipv6Dual === 1 ? '关闭 IPv6' : '开启 IPv6'}
-            </Button>
-            <Button
-              size="sm"
-              variant="flat"
-              color="danger"
-              className="justify-start min-h-7 h-7 px-2 text-xs"
-              onPress={() => { const n = rowMenu.node; setRowMenu(null); handleDelete(n); }}
-            >
-              删除
-            </Button>
           </div>
         )}
 
