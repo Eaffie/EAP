@@ -1293,7 +1293,7 @@ export default function NodePage() {
               return (
               <Card 
                 key={node.id} 
-                className="w-fit max-w-[20rem] shadow-sm border border-divider hover:shadow-md transition-shadow duration-200"
+                className="w-fit max-w-[22rem] shadow-sm border border-divider hover:shadow-md transition-shadow duration-200"
               >
                 <CardHeader className="pb-1 pt-3 px-3">
                   <div className="flex justify-between items-start w-full gap-2">
@@ -1425,10 +1425,11 @@ export default function NodePage() {
                     </span>
                   </div>
 
-                  {/* 操作按钮:7 个动作固定三行三列(安装/编辑/监控 → 重推/指向/清空 → 删除)。
-                      「清空」紧挨在「删除」前面、「删除」永远在最后一个格子里。
-                      按钮宽各自按两字文字自适应(w-fit 的网格),不撑满卡片 —— 卡片因此能变窄、一行多排一台 */}
-                  <div className="grid w-fit grid-cols-3 gap-1.5">
+                  {/* 操作按钮:7 个动作两行四列(安装/编辑/监控/重推 → 指向/清空/删除)。
+                      「清空」和「删除」同一行、紧挨着(清空在前),「删除」始终最后一个,
+                      不会再有「删除」独占一行。四列正好把卡片右边的空白用上。
+                      按钮宽各自按两字文字自适应(w-fit 的网格),不加 flex-1 —— 卡片因此能变窄、一行多排一台 */}
+                  <div className="grid w-fit grid-cols-4 gap-1.5">
                     <Button
                       size="sm"
                       variant="flat"
