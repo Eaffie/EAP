@@ -12,7 +12,10 @@ import org.aspectj.lang.annotation.*;
 import org.aspectj.lang.reflect.CodeSignature;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.springframework.stereotype.Component;
+import org.springframework.web.multipart.MultipartFile;
 
+import javax.servlet.ServletRequest;
+import javax.servlet.ServletResponse;
 import javax.servlet.http.HttpServletRequest;
 import java.lang.reflect.Method;
 import java.util.Arrays;
@@ -157,6 +160,26 @@ public class LogAspect {
     }
     
     /**
+     * 上传参数(backup/import 的 MultipartFile)不能直接 JSON 序列化:
+     * fastjson 会把 getBytes() 当成属性,整个文件 base64 进日志(docker logs 谁都能看,
+     * 4MB 的恢复文件能刷出 5MB 一行)。这里只留下文件名和大小。
+     * 另外 servlet 的 request/response 也不许序列化(会顺着 getOutputStream 挖出一大堆)。
+     */
+    private Object sanitize(Object arg) {
+        if (arg instanceof MultipartFile) {
+            MultipartFile file = (MultipartFile) arg;
+            Map<String, Object> m = new HashMap<>();
+            m.put("fileName", file.getOriginalFilename());
+            m.put("size", file.getSize());
+            return m;
+        }
+        if (arg instanceof ServletRequest || arg instanceof ServletResponse) {
+            return "<" + arg.getClass().getSimpleName() + ">";
+        }
+        return arg;
+    }
+
+    /**
      * 获取请求参数
      */
     private String getRequestParams(JoinPoint joinPoint) {
@@ -176,16 +199,16 @@ public class LogAspect {
                     
                     // 如果参数是普通对象，直接序列化
                     try {
-                        return JSON.toJSONString(args[0]);
+                        return JSON.toJSONString(sanitize(args[0]));
                     } catch (Exception e) {
                         // 如果序列化失败，再尝试使用参数名映射
                         Map<String, Object> map = new HashMap<>();
                         String[] names = ((CodeSignature) joinPoint.getSignature()).getParameterNames();
                         if (names != null) {
-                            map.put(names[0], args[0]);
+                            map.put(names[0], sanitize(args[0]));
                             return JSON.toJSONString(map);
                         }
-                        return JSON.toJSONString(args[0]);
+                        return JSON.toJSONString(sanitize(args[0]));
                     }
                 } else {
                     // 多个参数时，使用参数名映射
@@ -193,7 +216,7 @@ public class LogAspect {
                     String[] names = ((CodeSignature) joinPoint.getSignature()).getParameterNames();
                     if (names != null) {
                         for (int i = 0; i < names.length; i++) {
-                            map.put(names[i], args[i]);
+                            map.put(names[i], sanitize(args[i]));
                         }
                     }
                     return JSON.toJSONString(map);

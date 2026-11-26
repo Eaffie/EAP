@@ -201,6 +201,54 @@ export const deleteDnsRecord = (accountId: number, zoneId: string, id: string) =
 export const pointDnsRecord = (accountId: number, name: string, ip: string) =>
   Network.post("/dns/record/point", { accountId, name, ip });
 
+// 备份与恢复(放在「网站配置」页里的一块)。备份文件存在后端容器的 /app/logs/backups/
+// (已有的 backend_logs 卷),换面板机时从网页下载 .sql 再上传恢复,不用 SSH 传文件。
+export interface BackupFileInfo {
+  /** 文件名,如 eap_backup_20261126_120000.sql */
+  name: string;
+  /** 字节数 */
+  size: number;
+  /** 最后修改时间(毫秒时间戳) */
+  createdTime: number;
+}
+
+export interface BackupExportResult {
+  fileName: string;
+  size: number;
+  includeMonitor: boolean;
+  /** 导出的表数量 */
+  tables: number;
+  /** 导出的数据行数 */
+  rows: number;
+  elapsedMs: number;
+  /** 因为只留最近 20 份而被删掉的旧备份数量 */
+  removedOld: number;
+}
+
+export interface BackupRestoreResult {
+  executed: number;
+  skipped: number;
+  /** 恢复前自动做的那份备份的文件名(没做就是 null) */
+  safetyBackup: string | null;
+  /** 被重置为离线的节点行数 */
+  nodeReset: number;
+  elapsedMs: number;
+}
+
+export const getBackupList = () => Network.post<BackupFileInfo[]>("/backup/list");
+// includeMonitor 默认关:监控历史(monitor_metric / monitor_probe)占了全库 4MB 的绝大部分
+export const exportBackup = (includeMonitor: boolean) =>
+  Network.post<BackupExportResult>("/backup/export", { includeMonitor });
+export const downloadBackup = (name: string) => Network.download("/backup/download", { name });
+export const deleteBackup = (name: string) => Network.post("/backup/delete", { name });
+// 会覆盖当前库;后端在动手前自动存一份 before_restore_*.sql,失败就中止恢复
+export const importBackup = (file: File, skipSafetyBackup = false) => {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("skipSafetyBackup", skipSafetyBackup ? "true" : "false");
+  return Network.upload<BackupRestoreResult>("/backup/import", form);
+};
+
 // 修改密码接口
 export const updatePassword = (data: any) => Network.post("/user/updatePassword", data);
 

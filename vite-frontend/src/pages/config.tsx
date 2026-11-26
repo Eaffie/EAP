@@ -7,8 +7,17 @@ import { Spinner } from "@heroui/spinner";
 import { Divider } from "@heroui/divider";
 import { Switch } from "@heroui/switch";
 import { Select, SelectItem } from "@heroui/select";
+import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from "@heroui/modal";
 import toast from 'react-hot-toast';
-import { updateConfigs } from '@/api';
+import {
+  updateConfigs,
+  getBackupList,
+  exportBackup,
+  downloadBackup,
+  deleteBackup,
+  importBackup,
+} from '@/api';
+import type { BackupFileInfo } from '@/api';
 import { SettingsIcon } from '@/components/icons';
 
 import { isAdmin } from '@/utils/auth';
@@ -30,6 +39,53 @@ const SaveIcon = ({ className }: { className?: string }) => (
     <polyline points="7,3 7,8 15,8" />
   </svg>
 );
+
+// 备份 / 恢复用小图标(和上面 SaveIcon 一个路数,不引图标库)
+const BackupIcon = ({ className }: { className?: string }) => (
+  <svg
+    className={className}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    <polyline points="7,10 12,15 17,10" />
+    <line x1="12" y1="15" x2="12" y2="3" />
+  </svg>
+);
+
+const RestoreIcon = ({ className }: { className?: string }) => (
+  <svg
+    className={className}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M21 12a9 9 0 1 1-3-6.7" />
+    <polyline points="21,3 21,9 15,9" />
+  </svg>
+);
+
+/** 备份文件多大:1024 进制 */
+const formatBytes = (bytes: number) => {
+  if (!bytes || bytes <= 0) return '0 KB';
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+  return `${(bytes / 1024).toFixed(1)} KB`;
+};
+
+/** 时间戳 → 2026-11-26 12:00:00(浏览器本地时区) */
+const formatTime = (ms: number) => {
+  if (!ms) return '-';
+  const d = new Date(ms);
+  const p = (n: number) => (n < 10 ? '0' + n : String(n));
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+};
 
 interface ConfigItem {
   key: string;
@@ -141,6 +197,43 @@ export default function ConfigPage() {
   const [saving, setSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
   const [originalConfigs, setOriginalConfigs] = useState<Record<string, string>>(initialConfigs);
+
+  // ===== 备份与恢复(这块跟上面的配置表单互不影响,单独存状态) =====
+  const [backups, setBackups] = useState<BackupFileInfo[]>([]);
+  const [backupLoading, setBackupLoading] = useState(true);
+  // 正在下载的文件名(只用来给那一行的按钮转圈)
+  const [backupBusy, setBackupBusy] = useState<string | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [includeMonitor, setIncludeMonitor] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const [restoring, setRestoring] = useState(false);
+
+  // 读备份文件列表
+  const loadBackups = async () => {
+    try {
+      const res = await getBackupList();
+      if (res.code === 0) {
+        setBackups(res.data || []);
+      } else {
+        toast.error(res.msg || '读取备份列表失败');
+      }
+    } catch (error) {
+      toast.error('读取备份列表失败');
+    } finally {
+      setBackupLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    // 非管理员会被上面的权限检查带走,这里不用再拉接口
+    if (!isAdmin()) {
+      setBackupLoading(false);
+      return;
+    }
+    loadBackups();
+  }, []);
 
   // 权限检查
   useEffect(() => {
@@ -258,6 +351,122 @@ export default function ConfigPage() {
   };
 
 
+
+  // ===== 备份与恢复的操作 =====
+
+  /** 把 blob 交给浏览器下载(token 在 header 里,不能直接 window.open) */
+  const saveBlobAsFile = (blob: Blob, filename: string) => {
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadBackup = async (name: string) => {
+    setBackupBusy(name);
+    try {
+      const res = await downloadBackup(name);
+      if (!res.ok || !res.blob) {
+        toast.error(res.msg || '下载失败');
+        return;
+      }
+      saveBlobAsFile(res.blob, res.filename || name);
+    } catch (error) {
+      toast.error('下载失败');
+    } finally {
+      setBackupBusy(null);
+    }
+  };
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const res = await exportBackup(includeMonitor);
+      if (res.code !== 0) {
+        toast.error(res.msg || '备份失败');
+        return;
+      }
+      toast.success(res.msg || '备份完成');
+      setExportOpen(false);
+      await loadBackups();
+      // 刚生成的这份顺手下载,省一次点击
+      if (res.data && res.data.fileName) {
+        await handleDownloadBackup(res.data.fileName);
+      }
+    } catch (error) {
+      toast.error('备份失败');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleDeleteBackup = async (name: string) => {
+    if (!window.confirm(`删除备份 ${name}?\n\n只删这一个文件,不影响面板里的数据。`)) {
+      return;
+    }
+    try {
+      const res = await deleteBackup(name);
+      if (res.code === 0) {
+        toast.success('已删除');
+        await loadBackups();
+      } else {
+        toast.error(res.msg || '删除失败');
+      }
+    } catch (error) {
+      toast.error('删除失败');
+    }
+  };
+
+  /** 选文件:后缀/大小先在浏览器这边拦一道,后端还会再校验一次 */
+  const pickRestoreFile = (file: File | null) => {
+    if (!file) {
+      setRestoreFile(null);
+      return;
+    }
+    if (!file.name.toLowerCase().endsWith('.sql')) {
+      toast.error('只支持 .sql 备份文件');
+      return;
+    }
+    if (file.size > 50 * 1024 * 1024) {
+      toast.error('文件超过 50MB 上限');
+      return;
+    }
+    setRestoreFile(file);
+  };
+
+  const handleRestore = async () => {
+    if (!restoreFile) {
+      toast.error('请先选 .sql 备份文件');
+      return;
+    }
+    const confirmed = window.confirm(
+      `用 ${restoreFile.name} 恢复?\n\n`
+      + '会覆盖当前库里的所有数据(用户、线路、转发、节点、网站配置全部换成备份里的)。\n'
+      + '执行前会自动把当前库备份成 before_restore_*.sql,恢复错了还能退回去。'
+    );
+    if (!confirmed) return;
+
+    setRestoring(true);
+    try {
+      const res = await importBackup(restoreFile);
+      if (res.code === 0) {
+        toast.success(res.msg || '恢复完成');
+        setRestoreOpen(false);
+        setRestoreFile(null);
+        await loadBackups();
+      } else {
+        toast.error(res.msg || '恢复失败');
+      }
+    } catch (error) {
+      toast.error('恢复失败');
+    } finally {
+      setRestoring(false);
+    }
+  };
 
   // 检查配置项是否应该显示（依赖检查）
   const shouldShowItem = (item: ConfigItem): boolean => {
@@ -441,6 +650,188 @@ export default function ConfigPage() {
             </CardBody>
           </Card>
         )}
+        {/* 备份与恢复:换面板机时不用 SSH 传文件,网页里导出/下载/上传恢复 */}
+        <Card className="shadow-md mt-6">
+          <CardHeader className="pb-4">
+            <div className="flex justify-between items-center w-full gap-3 flex-wrap">
+              <div>
+                <h2 className="text-xl font-semibold">备份与恢复</h2>
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  把数据库导成 .sql 下载到本地;新面板上传同一个文件就能恢复。换机器不用再 SSH 传文件。
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  color="primary"
+                  startContent={<BackupIcon className="w-4 h-4" />}
+                  onClick={() => setExportOpen(true)}
+                >
+                  立即备份
+                </Button>
+                <Button
+                  variant="bordered"
+                  startContent={<RestoreIcon className="w-4 h-4" />}
+                  onClick={() => {
+                    setRestoreFile(null);
+                    setRestoreOpen(true);
+                  }}
+                >
+                  上传恢复
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+
+          <Divider />
+
+          <CardBody className="space-y-3 pt-6">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                备份文件存在面板后端容器的 /app/logs/backups/ 里(已有卷),只保留最近 20 份。
+              </p>
+              <Button size="sm" variant="light" onClick={loadBackups} isLoading={backupLoading}>
+                刷新
+              </Button>
+            </div>
+
+            {backupLoading ? (
+              <div className="py-8 text-center text-sm text-gray-400">正在读取备份列表...</div>
+            ) : backups.length === 0 ? (
+              <div className="py-8 text-center text-sm text-gray-400">
+                还没有备份文件,点右上角「立即备份」生成一份。
+              </div>
+            ) : (
+              <div className="rounded-xl border border-gray-200 dark:border-gray-700 overflow-x-auto">
+                <table className="w-full text-sm border-collapse">
+                  <thead>
+                    <tr className="bg-gray-100 dark:bg-gray-800 text-xs text-gray-600 dark:text-gray-300">
+                      <th className="text-left font-medium px-3 py-2 whitespace-nowrap">文件名</th>
+                      <th className="text-left font-medium px-3 py-2 whitespace-nowrap">大小</th>
+                      <th className="text-left font-medium px-3 py-2 whitespace-nowrap">时间</th>
+                      <th className="text-right font-medium px-3 py-2 whitespace-nowrap">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {backups.map((file, index) => (
+                      <tr
+                        key={file.name}
+                        className={
+                          'border-t border-gray-100 dark:border-gray-800 ' +
+                          (index % 2 === 1 ? 'bg-gray-50 dark:bg-gray-900/40' : '')
+                        }
+                      >
+                        <td className="px-3 py-2 font-mono text-xs break-all">{file.name}</td>
+                        <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">
+                          {formatBytes(file.size)}
+                        </td>
+                        <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">
+                          {formatTime(file.createdTime)}
+                        </td>
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          <span className="flex items-center justify-end gap-1">
+                            <Button
+                              size="sm"
+                              variant="flat"
+                              className="min-w-0 h-7 px-2 text-xs"
+                              isLoading={backupBusy === file.name}
+                              onClick={() => handleDownloadBackup(file.name)}
+                            >
+                              下载
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="flat"
+                              color="danger"
+                              className="min-w-0 h-7 px-2 text-xs"
+                              onClick={() => handleDeleteBackup(file.name)}
+                            >
+                              删除
+                            </Button>
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardBody>
+        </Card>
+
+        {/* 立即备份 */}
+        <Modal isOpen={exportOpen} onClose={() => setExportOpen(false)} size="md">
+          <ModalContent>
+            <ModalHeader className="flex flex-col gap-1">立即备份</ModalHeader>
+            <ModalBody className="space-y-4">
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2">
+                <div>
+                  <div className="text-sm">包含监控历史</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">
+                    转发机的流量 / 探针曲线(约 4MB、3 万多行)。换机器用不上,默认不带。
+                  </div>
+                </div>
+                <Switch
+                  isSelected={includeMonitor}
+                  onValueChange={setIncludeMonitor}
+                  size="sm"
+                  aria-label="包含监控历史"
+                />
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                业务数据很小,一般几秒就好。生成后会自动开始下载,并只保留最近 20 份备份。
+              </p>
+            </ModalBody>
+            <ModalFooter>
+              <Button variant="light" onClick={() => setExportOpen(false)}>
+                取消
+              </Button>
+              <Button color="primary" isLoading={exporting} onClick={handleExport}>
+                开始备份
+              </Button>
+            </ModalFooter>
+          </ModalContent>
+        </Modal>
+
+        {/* 上传恢复 */}
+        <Modal isOpen={restoreOpen} onClose={() => setRestoreOpen(false)} size="lg" isDismissable={!restoring}>
+          <ModalContent>
+            <ModalHeader className="flex flex-col gap-1">上传备份恢复</ModalHeader>
+            <ModalBody className="space-y-4">
+              <div>
+                <label className="text-sm font-medium text-gray-700 dark:text-gray-300">选择 .sql 备份文件</label>
+                <input
+                  type="file"
+                  accept=".sql"
+                  disabled={restoring}
+                  onChange={(e) => pickRestoreFile(e.target.files && e.target.files[0] ? e.target.files[0] : null)}
+                  className="mt-2 block w-full text-sm text-gray-600 dark:text-gray-300 cursor-pointer
+                    file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0
+                    file:text-sm file:bg-primary file:text-white hover:file:opacity-90"
+                />
+                {restoreFile && (
+                  <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                    已选:{restoreFile.name}({formatBytes(restoreFile.size)})
+                  </p>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-danger-200 bg-danger-50 dark:bg-danger-900/20 dark:border-danger-800 px-3 py-2 space-y-1 text-xs text-danger-700 dark:text-danger-300">
+                <div className="font-medium">会覆盖当前库里的所有数据:用户、线路、转发、节点、网站配置都换成备份里的。</div>
+                <div>执行前会自动把当前库备份成 before_restore_*.sql,恢复错了还能退回去。</div>
+                <div>恢复后所有节点会先显示离线,等它们重新连上这台面板会自动变绿(1~2 分钟)。</div>
+                <div>面板后端地址等配置也会用备份里的值;换机器后记得去上面「基本设置」核对。</div>
+              </div>
+            </ModalBody>
+            <ModalFooter>
+              <Button variant="light" onClick={() => setRestoreOpen(false)} isDisabled={restoring}>
+                取消
+              </Button>
+              <Button color="danger" isLoading={restoring} isDisabled={!restoreFile} onClick={handleRestore}>
+                {restoring ? '恢复中...' : '确定恢复'}
+              </Button>
+            </ModalFooter>
+          </ModalContent>
+        </Modal>
       </div>
     
   );

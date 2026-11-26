@@ -90,6 +90,8 @@ const SLOW_PATHS = [
   '/forward/update',
   '/tunnel/diagnose',
   '/forward/diagnose',
+  // 恢复数据库:几十万行 INSERT 要一条条执行,监控全量备份时 30 秒肯定不够
+  '/backup/import',
 ];
 const DEFAULT_TIMEOUT = 30000;
 const SLOW_TIMEOUT = 180000;
@@ -171,7 +173,110 @@ const Network = {
            resolve({"code": -1, "msg": error.message || "网络请求失败", "data": null as T});
          });
     });
+  },
+
+  /**
+   * 上传(multipart/form-data)。
+   * 不能走 post():那边写死了 Content-Type: application/json,boundary 会丢,后端收不到文件。
+   * 这里不显式设 Content-Type,交给浏览器/axios 自己带 boundary。
+   */
+  upload: function<T = any>(path: string = '', form: FormData): Promise<ApiResponse<T>> {
+    return new Promise(function(resolve) {
+      if (baseURL === '') {
+        resolve({"code": -1, "msg": " - 请先设置面板地址", "data": null as T});
+        return;
+      }
+
+      axios.post(path, form, {
+        timeout: timeoutFor(path),
+        headers: {
+          "Authorization": window.localStorage.getItem('token')
+        }
+      })
+        .then(function(response: AxiosResponse<ApiResponse<T>>) {
+          if (isTokenExpired(response.data)) {
+            handleTokenExpired();
+            return;
+          }
+          resolve(response.data);
+        })
+        .catch(function(error: any) {
+          console.error('上传请求错误:', error);
+
+          if (error.response && error.response.status === 401) {
+            handleTokenExpired();
+            return;
+          }
+
+          resolve({"code": -1, "msg": error.message || "上传失败", "data": null as T});
+        });
+    });
+  },
+
+  /**
+   * 下载文件。
+   * token 在 Authorization 头里,window.open 带不了它,只能 JS 里取成 blob 再触发下载。
+   * 后端出错时不返回文件而是 {"code":-1,"msg":...},这里按 Content-Type 分辨。
+   */
+  download: function(path: string = '', data: any = {}): Promise<DownloadResult> {
+    return new Promise(function(resolve) {
+      if (baseURL === '') {
+        resolve({ ok: false, msg: '请先设置面板地址' });
+        return;
+      }
+
+      axios.post(path, null, {
+        params: data,
+        timeout: timeoutFor(path),
+        responseType: 'blob',
+        headers: {
+          "Authorization": window.localStorage.getItem('token')
+        }
+      })
+        .then(function(response: AxiosResponse<Blob>) {
+          const blob = response.data;
+          const type = (blob && blob.type) || '';
+          if (type.indexOf('application/json') >= 0) {
+            // 后端把错误当 JSON 回来了(文件不存在 / 文件名不合法)
+            blob.text()
+              .then(function(text: string) {
+                let msg = '下载失败';
+                try {
+                  const parsed = JSON.parse(text);
+                  if (parsed && parsed.msg) msg = parsed.msg;
+                } catch (e) {
+                  // 不是 JSON 就用默认文案
+                }
+                resolve({ ok: false, msg });
+              })
+              .catch(function() {
+                resolve({ ok: false, msg: '下载失败' });
+              });
+            return;
+          }
+          const disposition = (response.headers && (response.headers['content-disposition'] as string)) || '';
+          const matched = /filename="?([^";]+)"?/.exec(disposition);
+          resolve({ ok: true, blob, filename: matched ? matched[1] : '' });
+        })
+        .catch(function(error: any) {
+          console.error('下载请求错误:', error);
+
+          if (error.response && error.response.status === 401) {
+            handleTokenExpired();
+            return;
+          }
+
+          resolve({ ok: false, msg: error.message || '下载失败' });
+        });
+    });
   }
 };
+
+export interface DownloadResult {
+  ok: boolean;
+  msg?: string;
+  blob?: Blob;
+  filename?: string;
+}
 
 export default Network; 
