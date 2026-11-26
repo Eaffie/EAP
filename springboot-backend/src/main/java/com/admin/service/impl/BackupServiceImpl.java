@@ -487,10 +487,25 @@ public class BackupServiceImpl implements BackupService {
                     }
 
                     // 备份里节点全是"在线"(旧面板连接正常时导的),新面板没有那些连接 → 会一直假在线。
-                    // node.status 只有 WebSocket 连上/断开时才改,这里先全部置 0,节点连回来会自己变 1。
+                    // node.status 只有 WebSocket 连上/断开时才改,这里先全部置 0;
+                    // 然后按当前真正握着连接的那几台改回 1(它们是实打实在线的,面板不该报离线)。
                     int nodeReset;
                     try {
                         nodeReset = st.executeUpdate("UPDATE node SET status=0");
+                        java.util.Set<Long> online = com.admin.common.utils.WebSocketServer.connectedNodeIds();
+                        if (!online.isEmpty()) {
+                            StringBuilder sb = new StringBuilder("UPDATE node SET status=1 WHERE id IN (");
+                            int i = 0;
+                            for (Long id : online) {
+                                if (i++ > 0) {
+                                    sb.append(',');
+                                }
+                                sb.append(id);
+                            }
+                            sb.append(')');
+                            int back = st.executeUpdate(sb.toString());
+                            nodeReset = Math.max(0, nodeReset - back);
+                        }
                     } catch (SQLException e) {
                         nodeReset = -1;
                         log.warn("重置节点在线状态失败: {}", shortMsg(e.getMessage()));

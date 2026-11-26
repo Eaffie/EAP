@@ -75,6 +75,24 @@ public class WebSocketServer extends TextWebSocketHandler {
         return nodeId == null ? null : singboxRunning.get(nodeId);
     }
 
+    /**
+     * 当前真正握着 WS 连接的节点 id(只读快照)。
+     *
+     * 用在【面板内恢复数据库】之后:node.status 只有连接建立/断开时才写,恢复把整张 node 表
+     * 换成备份里的值(全是在线),必须清 0;但连接还活着的那几台其实是真在线,清完得按这份名单
+     * 改回 1 —— 否则面板会一直显示"离线",直到节点自己重连(可能是几天后)。
+     */
+    public static java.util.Set<Long> connectedNodeIds() {
+        java.util.Set<Long> out = new java.util.HashSet<>();
+        for (java.util.Map.Entry<Long, WebSocketSession> e : nodeSessions.entrySet()) {
+            WebSocketSession s = e.getValue();
+            if (s != null && s.isOpen()) {
+                out.add(e.getKey());
+            }
+        }
+        return out;
+    }
+
     /** 节点上报的公网 IPv6 地址(ipv6_addrs);没报过返回空列表 */
     private static final ConcurrentHashMap<Long, java.util.List<String>> nodeV6Addrs = new ConcurrentHashMap<>();
     /** 节点上报的能力标记(caps),如 listen_switch;没报过返回空列表 */
