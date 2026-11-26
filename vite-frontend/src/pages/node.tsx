@@ -631,6 +631,13 @@ export default function NodePage() {
     }
   };
 
+  // 节点版本号:统一带个 v(节点上报的有的带 v 有的不带,别出现 vv1.2.7)
+  const versionText = (node: Node): string => {
+    const v = (node.version || '').trim();
+    if (!v) return '未知';
+    return v.startsWith('v') || v.startsWith('V') ? v : `v${v}`;
+  };
+
   // 速度 / 流量渲染成「数字 + 单位」两段:数字定宽右对齐、单位定宽左对齐,
   // 这样上传/下载/上行/下行 四个数字上下左右都对齐,一眼能比大小(列表和卡片共用)
   const sizeCell = (text: string, tone = '') => {
@@ -639,8 +646,8 @@ export default function NodePage() {
     const unit = cut < 0 ? '' : text.slice(cut + 1);
     return (
       <span className="inline-flex items-baseline">
-        <span className={`w-16 text-right font-mono tabular-nums text-xs ${tone}`}>{num}</span>
-        <span className="w-8 pl-1 text-left text-[11px] text-default-400">{unit}</span>
+        <span className={`w-13 text-right font-mono tabular-nums text-xs ${tone}`}>{num}</span>
+        <span className="w-7 pl-0.5 text-left text-[11px] text-default-400">{unit}</span>
       </span>
     );
   };
@@ -1215,7 +1222,7 @@ export default function NodePage() {
               return (
               <Card 
                 key={node.id} 
-                className="w-fit max-w-[25rem] shadow-sm border border-divider hover:shadow-md transition-shadow duration-200"
+                className="w-fit max-w-[20rem] shadow-sm border border-divider hover:shadow-md transition-shadow duration-200"
               >
                 <CardHeader className="pb-1 pt-3 px-3">
                   <div className="flex justify-between items-start w-full gap-2">
@@ -1248,6 +1255,8 @@ export default function NodePage() {
                         >
                           IPv6<span className="text-[9px] leading-none">{v6on ? '●' : '○'}</span>
                         </Button>
+                        {/* 版本跟状态放一起,不抢视觉 */}
+                        <span className="text-[11px] text-default-500 tabular-nums">{versionText(node)}</span>
                       </div>
                       {/* 有没有 IPv6 只按「有没有地址」显示:有就摆地址,没有就「v6 无」;
                           双栈开没开只看上面那个 Chip 的 ●/○ */}
@@ -1320,30 +1329,28 @@ export default function NodePage() {
                   </div>
 
                   {/* 上传 / 下载:和下面流量行同一套结构 —— 定宽标签 + 定宽数字 + 单位,
-                      两行的标签列宽一致,所以 上传/下载/上行/下行 四个数字上下左右都对齐 */}
+                      两行标签列宽一致,所以 上传/下载/上行/下行 四个数字上下左右都对齐;
+                      标签↔数字 gap-0.5,看起来是一体的 */}
                   <div className="flex flex-wrap items-center gap-4 text-xs mb-1">
-                    <span className="flex items-center gap-1">
+                    <span className="flex items-center gap-0.5">
                       <span className="inline-block w-8 text-default-500">上传</span>
                       <span className="text-default-600">{sizeCell(sys ? formatSpeed(sys.uploadSpeed) : '-')}</span>
                     </span>
-                    <span className="flex items-center gap-1">
+                    <span className="flex items-center gap-0.5">
                       <span className="inline-block w-8 text-default-500">下载</span>
                       <span className="text-default-600">{sizeCell(sys ? formatSpeed(sys.downloadSpeed) : '-')}</span>
                     </span>
                   </div>
 
-                  {/* 上下行流量 + 版本:全部靠左紧凑排(不用 justify-between,版本不往右推) */}
+                  {/* 上下行流量:全部靠左紧凑排(版本已挪到标题栏,这一行只剩两段) */}
                   <div className="flex flex-wrap items-center gap-4 text-xs mb-2.5">
-                    <span className="flex items-center gap-1">
+                    <span className="flex items-center gap-0.5">
                       <span className="inline-block w-8 text-default-500">上行</span>
                       <span className="text-primary">{sizeCell(sys ? formatTraffic(sys.uploadTraffic) : '-')}</span>
                     </span>
-                    <span className="flex items-center gap-1">
+                    <span className="flex items-center gap-0.5">
                       <span className="inline-block w-8 text-default-500">下行</span>
                       <span className="text-success">{sizeCell(sys ? formatTraffic(sys.downloadTraffic) : '-')}</span>
-                    </span>
-                    <span className="flex items-center gap-1 text-default-500">
-                      版本 <span className="font-mono text-foreground">{node.version || '未知'}</span>
                     </span>
                   </div>
 
