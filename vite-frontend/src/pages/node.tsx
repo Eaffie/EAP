@@ -1205,7 +1205,8 @@ export default function NodePage() {
             </table>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 min-[1800px]:grid-cols-5 gap-3">
+          /* 卡片宽度跟着内容走:flex-wrap + 每张卡 w-fit,不再被网格列拉满(右边会空一大片) */
+          <div className="flex flex-wrap items-start gap-3">
             {filteredNodes.map((node) => {
               const online = node.connectionStatus === 'online';
               const sys = online ? node.systemInfo : null;
@@ -1214,7 +1215,7 @@ export default function NodePage() {
               return (
               <Card 
                 key={node.id} 
-                className="shadow-sm border border-divider hover:shadow-md transition-shadow duration-200"
+                className="w-fit max-w-[21rem] shadow-sm border border-divider hover:shadow-md transition-shadow duration-200"
               >
                 <CardHeader className="pb-1 pt-3 px-3">
                   <div className="flex justify-between items-start w-full gap-2">
@@ -1328,20 +1329,23 @@ export default function NodePage() {
                     </span>
                   </div>
 
-                  {/* 上下行流量 + 版本:同一行小字,流量数字定宽右对齐(GB 列竖着对齐) */}
-                  <div className="flex items-center justify-between gap-2 text-xs mb-2.5">
-                    <span className="min-w-0 truncate">
+                  {/* 上下行流量 + 版本:全部靠左紧凑排(不用 justify-between,版本不往右推);
+                      流量数字定宽右对齐,GB/TB 竖着对齐 */}
+                  <div className="flex flex-wrap items-center gap-4 text-xs mb-2.5">
+                    <span className="flex items-center gap-1">
                       <span className="text-default-500">上行</span>
-                      <span className="ml-1 inline-block w-[4.5rem] text-right font-mono tabular-nums text-primary">
+                      <span className="inline-block w-16 text-right font-mono tabular-nums text-primary">
                         {sys ? formatTraffic(sys.uploadTraffic) : '-'}
                       </span>
-                      <span className="ml-2 text-default-500">下行</span>
-                      <span className="ml-1 inline-block w-[4.5rem] text-right font-mono tabular-nums text-success">
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="text-default-500">下行</span>
+                      <span className="inline-block w-16 text-right font-mono tabular-nums text-success">
                         {sys ? formatTraffic(sys.downloadTraffic) : '-'}
                       </span>
                     </span>
-                    <span className="shrink-0 text-default-500">
-                      版本 <span className="font-mono">{node.version || '未知'}</span>
+                    <span className="flex items-center gap-1 text-default-500">
+                      版本 <span className="font-mono text-foreground">{node.version || '未知'}</span>
                     </span>
                   </div>
 
