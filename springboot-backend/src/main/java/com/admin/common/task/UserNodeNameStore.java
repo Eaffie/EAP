@@ -216,43 +216,47 @@ public class UserNodeNameStore {
     }
 
     // ---- 级联清理:都吞掉异常,绝不影响原来的删除流程;不建表(见 ensure 的说明) ----
+    // 返回【真删掉的行数】(表不可用 / 出错返回 0),调用方可以据此如实计数(如「清空」的统计)。
 
-    public void deleteUser(Long userId) {
-        quiet("DELETE FROM `user_node_name` WHERE `user_id` = ?", userId);
+    public int deleteUser(Long userId) {
+        return quiet("DELETE FROM `user_node_name` WHERE `user_id` = ?", userId);
     }
 
     /** 协议删了:所有车友对它起的名字一起清 */
-    public void deleteInbound(Long inboundId) {
-        quiet("DELETE FROM `user_node_name` WHERE `scope` = 'inbound' AND `ref_key` = ?", String.valueOf(inboundId));
+    public int deleteInbound(Long inboundId) {
+        return quiet("DELETE FROM `user_node_name` WHERE `scope` = 'inbound' AND `ref_key` = ?", String.valueOf(inboundId));
     }
 
     /** 某车友不再有这个协议 */
-    public void deleteUserInbound(Long userId, Long inboundId) {
-        quiet("DELETE FROM `user_node_name` WHERE `user_id` = ? AND `scope` = 'inbound' AND `ref_key` = ?",
+    public int deleteUserInbound(Long userId, Long inboundId) {
+        return quiet("DELETE FROM `user_node_name` WHERE `user_id` = ? AND `scope` = 'inbound' AND `ref_key` = ?",
                 userId, String.valueOf(inboundId));
     }
 
-    public void deleteUserLine(Long userId, String lineKey) {
-        quiet("DELETE FROM `user_node_name` WHERE `user_id` = ? AND `scope` = 'line' AND `ref_key` = ?", userId, lineKey);
+    public int deleteUserLine(Long userId, String lineKey) {
+        return quiet("DELETE FROM `user_node_name` WHERE `user_id` = ? AND `scope` = 'line' AND `ref_key` = ?",
+                userId, lineKey);
     }
 
     /** 转发删了;新建转发拿到的 id 也调一次(防 id 复用继承旧名字) */
-    public void deleteForward(Long forwardId) {
+    public int deleteForward(Long forwardId) {
         if (forwardId == null) {
-            return;
+            return 0;
         }
-        quiet("DELETE FROM `user_node_name` WHERE `scope` = 'forward' AND `ref_key` = ?", String.valueOf(forwardId));
+        return quiet("DELETE FROM `user_node_name` WHERE `scope` = 'forward' AND `ref_key` = ?",
+                String.valueOf(forwardId));
     }
 
-    private void quiet(String sql, Object... args) {
+    private int quiet(String sql, Object... args) {
         if (!available) {
-            return;
+            return 0;
         }
         try {
-            jdbc.update(sql, args);
+            return jdbc.update(sql, args);
         } catch (Exception e) {
             noteFailure(e);
             log.warn("清理车友节点名失败(不影响原操作): {}", e.getMessage());
+            return 0;
         }
     }
 }

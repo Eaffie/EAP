@@ -90,7 +90,8 @@ public class NodePurgeService {
     /**
      * 清空一台机器。返回 data = {inboundDeleted, inboundUserDeleted, inboundLineDeleted, forwardDeleted,
      * forwardFailed, forwardFailReasons, tunnelDeleted, userTunnelDeleted, aliasDeleted, nodeNameDeleted,
-     * lineSpeedDeleted, staleStateDeleted, errors}。
+     * forwardNameDeleted, lineSpeedDeleted, staleStateDeleted, errors}。
+     * 所有 xxxDeleted 都是【真删掉的行数】。
      */
     public R purge(Long nodeId) {
         if (nodeId == null) {
@@ -207,11 +208,11 @@ public class NodePurgeService {
         int tunnelDeleted = tunnelMapper.delete(new QueryWrapper<Tunnel>().eq("in_node_id", nodeId));
 
         // 2.8 车友给这台机器起的名字:线路别名(机器|落地)、协议名、转发名
+        //     (三个计数都是【真删掉的行数】,不是尝试次数;表不可用时是 0)
         int aliasDeleted = 0;
         for (InboundLine l : lines) {
             try {
-                nodeNameStore.deleteUserLine(l.getUserId(), SubNames.lineKey(nodeId, l.getLandingId()));
-                aliasDeleted++;
+                aliasDeleted += nodeNameStore.deleteUserLine(l.getUserId(), SubNames.lineKey(nodeId, l.getLandingId()));
             } catch (Exception e) {
                 errors.add("清线路别名(车友 " + l.getUserId() + ")失败:" + e.getMessage());
             }
@@ -219,14 +220,14 @@ public class NodePurgeService {
         int nodeNameDeleted = 0;
         for (InboundUser iu : inboundUsers) {
             try {
-                nodeNameStore.deleteUserInbound(iu.getUserId(), iu.getInboundId());
-                nodeNameDeleted++;
+                nodeNameDeleted += nodeNameStore.deleteUserInbound(iu.getUserId(), iu.getInboundId());
             } catch (Exception e) {
                 errors.add("清协议名(车友 " + iu.getUserId() + ")失败:" + e.getMessage());
             }
         }
+        int forwardNameDeleted = 0;
         for (Long fid : forwardIds) {
-            nodeNameStore.deleteForward(fid);
+            forwardNameDeleted += nodeNameStore.deleteForward(fid);
         }
 
         // 2.9 这台机器上过期的自动暂停状态(forward 没了,这些记录以后不该再影响同 id 的新转发)
@@ -264,6 +265,7 @@ public class NodePurgeService {
         data.put("userTunnelDeleted", userTunnelDeleted);
         data.put("aliasDeleted", aliasDeleted);
         data.put("nodeNameDeleted", nodeNameDeleted);
+        data.put("forwardNameDeleted", forwardNameDeleted);
         data.put("lineSpeedDeleted", lineSpeedDeleted);
         data.put("staleStateDeleted", staleStateDeleted);
         data.put("errors", errors);

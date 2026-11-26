@@ -1485,7 +1485,7 @@ export default function NodePage() {
                       指向
                     </Button>
                     {/* 清空:这台机器上所有线路/协议/公网转发服务一次清掉(不可恢复),
-                        和实心红「删除」区分开 —— 空心 danger(flat),点了还要手输机器名 */}
+                        和实心红「删除」区分开 —— 空心 danger(flat),点了弹一次红色二次确认 */}
                     <Button
                       size="sm"
                       variant="flat"
