@@ -28,6 +28,8 @@ export const createNode = (data: any) => Network.post("/node/create", data);
 export const getNodeList = () => Network.post("/node/list");
 export const updateNode = (data: any) => Network.post("/node/update", data);
 export const deleteNode = (id: number) => Network.post("/node/delete", { id });
+// 「清空」:清掉这台机器上所有线路/协议/公网转发服务(不可恢复,node 记录保留)
+export const purgeNode = (nodeId: number) => Network.post("/node/purge", { nodeId });
 export const enableNodeIpv6 = (nodeId: number) => Network.post("/node/enable-ipv6", { nodeId });
 export const disableNodeIpv6 = (nodeId: number) => Network.post("/node/disable-ipv6", { nodeId });
 // 监控:转发机历史曲线

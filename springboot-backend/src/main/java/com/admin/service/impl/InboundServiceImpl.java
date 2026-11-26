@@ -155,6 +155,29 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         return pushNodeSingbox0(nodeId);
     }
 
+    /**
+     * 「清空」用:下发一份空 sing-box 配置(无入站、出站只剩 direct)。
+     *
+     * 【为什么不能复用 pushNodeSingbox】它是「按库里的入站全量拼」—— 清空的顺序是
+     * 先推空配置再删库,这时候库里还有入站,按库拼出来的还是老配置,推了等于没推。
+     * 所以单独留一个变体,恒发空配置;正常推配置的逻辑一个字都不动。
+     *
+     * 【为什么这样就等于抹掉落地】落地(socks5 地址/账号/密码)只存在于 sing-box 配置的
+     * outbounds 里,节点端收到 SetSingboxConfig 是整份覆盖写 /etc/gost/sing-box.json。
+     */
+    @Override
+    public R pushNodeSingboxEmpty(Long nodeId) {
+        if (nodeId == null) {
+            return R.err("缺少节点 id");
+        }
+        GostDto r = SingboxUtil.SetSingboxConfig(nodeId, java.util.Collections.emptyList(),
+                java.util.Collections.emptyMap(), java.util.Collections.emptyMap(), null);
+        if (r == null || !"OK".equals(r.getMsg())) {
+            return R.err("下发空 sing-box 配置失败:" + (r != null && r.getMsg() != null ? r.getMsg() : "节点无响应/超时"));
+        }
+        return R.ok();
+    }
+
     @Override
     public R createInbound(InboundDto dto) {
         R built = buildAndSaveInbound(dto);

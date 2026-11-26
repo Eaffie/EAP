@@ -40,6 +40,14 @@ public interface InboundService extends IService<Inbound> {
      */
     R pushNodeSingbox(Long nodeId);
 
+    /**
+     * 「清空」用:按【空配置】下发 sing-box —— 入站全没了,出站只剩 direct。
+     * 和 pushNodeSingbox 的区别只在内容:它按库里的入站全量拼,这里恒发一份空配置,
+     * 所以机器上 /etc/gost/sing-box.json 里原有的入站和落地(socks5 账号密码)会被整份覆盖掉。
+     * 调用方负责先确认节点在线:节点不在线时这和别的下发一样只会超时失败。
+     */
+    R pushNodeSingboxEmpty(Long nodeId);
+
     /** 删除入站(连带其用户的 gost 转发 + 重推配置) */
     R deleteInbound(Long id);
 

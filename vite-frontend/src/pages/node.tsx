@@ -31,6 +31,7 @@ import {
   enableNodeIpv6,
   disableNodeIpv6,
   deleteNode,
+  purgeNode,
   getNodeInstallCommand,
   updateConfig,
   getInboundList,
@@ -114,6 +115,11 @@ export default function NodePage() {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [nodeToDelete, setNodeToDelete] = useState<Node | null>(null);
+  // 「清空」:不可恢复的批量删除,点之前给一次普通二次确认(见 purgeTarget 那个弹窗)
+  const [purgeTarget, setPurgeTarget] = useState<Node | null>(null);
+  const [purgeLoading, setPurgeLoading] = useState(false);
+  // 每台机器上现有多少条线路(直连 / 中转),给清空确认弹窗报数用;从协议列表算
+  const [lineCounts, setLineCounts] = useState<Record<number, { direct: number; relay: number }>>({});
   // 开启 / 关闭 IPv6 的确认框
   const [ipv6Confirm, setIpv6Confirm] = useState<{ node: Node; enable: boolean } | null>(null);
   const [ipv6Errors, setIpv6Errors] = useState<{ title: string; items: string[] } | null>(null);
@@ -293,7 +299,27 @@ export default function NodePage() {
     getInboundList()
       .then((ib: any) => {
         if (ib.code === 0) {
-          setInboundNodeIds(new Set((ib.data || []).map((x: any) => x.nodeId)));
+          const list: any[] = ib.data || [];
+          setInboundNodeIds(new Set(list.map((x: any) => x.nodeId)));
+          // 清空确认弹窗要报「N 条直连 / M 条中转」:直连一条入站就是一条线路,
+          // 中转按机器 × 落地算一条(同一落地下的多个协议算一条)
+          const counts: Record<number, { direct: number; relay: number }> = {};
+          const relayLandings: Record<number, Set<number>> = {};
+          for (const x of list) {
+            const nid = Number(x.nodeId);
+            if (!nid) continue;
+            if (!counts[nid]) counts[nid] = { direct: 0, relay: 0 };
+            if (x.landingId === null || x.landingId === undefined) {
+              counts[nid].direct += 1;
+            } else {
+              if (!relayLandings[nid]) relayLandings[nid] = new Set<number>();
+              relayLandings[nid].add(Number(x.landingId));
+            }
+          }
+          for (const k of Object.keys(relayLandings)) {
+            counts[Number(k)].relay = relayLandings[Number(k)].size;
+          }
+          setLineCounts(counts);
         }
       })
       .catch(() => {});
@@ -623,6 +649,9 @@ export default function NodePage() {
       case 'ipv6':
         setIpv6Confirm({ node, enable: node.ipv6Dual !== 1 });
         break;
+      case 'purge':
+        handlePurge(node);
+        break;
       case 'delete':
         handleDelete(node);
         break;
@@ -798,6 +827,46 @@ export default function NodePage() {
       toast.error('网络错误，请重试');
     } finally {
       setDeleteLoading(false);
+    }
+  };
+
+  // 清空这台机器:不可恢复 —— 先弹红色二次确认,确认后才真的调接口
+  const handlePurge = (node: Node) => {
+    setPurgeTarget(node);
+  };
+
+  const confirmPurge = async () => {
+    const node = purgeTarget;
+    if (!node || purgeLoading) return;
+
+    setPurgeLoading(true);
+    try {
+      const res: any = await purgeNode(node.id);
+      if (res.code === 0) {
+        const d = res.data || {};
+        const parts = [
+          `协议 ${d.inboundDeleted ?? 0} 条`,
+          `分配 ${d.inboundUserDeleted ?? 0} 条`,
+          `线路 ${d.inboundLineDeleted ?? 0} 条`,
+          `转发 ${d.forwardDeleted ?? 0} 条`,
+        ];
+        const bad = Number(d.forwardFailed ?? 0);
+        const errs: string[] = Array.isArray(d.errors) ? d.errors : [];
+        if (bad > 0 || errs.length) {
+          toast(`「${node.name}」已清空(${parts.join('、')}),但有 ${bad + errs.length} 项没做成,建议再点一次或看面板日志`,
+            { icon: '⚠️', duration: 10000 });
+        } else {
+          toast.success(`「${node.name}」已清空:${parts.join('、')}`);
+        }
+        setPurgeTarget(null);
+        loadNodes();
+      } else {
+        toast.error(res.msg || '清空失败');
+      }
+    } catch (error) {
+      toast.error('网络错误,请刷新页面确认这台机器当前还剩什么');
+    } finally {
+      setPurgeLoading(false);
     }
   };
 
@@ -1176,7 +1245,7 @@ export default function NodePage() {
                           >
                             编辑
                           </Button>
-                          {/* 其余动作:监控 / 重推配置 / 指向这台机器 / IPv6 / 删除。
+                          {/* 其余动作:监控 / 重推配置 / 指向这台机器 / IPv6 / 清空 / 删除(清空在删除前面)。
                               用 HeroUI Dropdown(portal 渲染 + React Aria 定位/收起),
                               比自己写 fixed 面板稳:不会被表格的 overflow 裁掉,也不会被自己的
                               点击外部监听抢掉那次点击 */}
@@ -1200,6 +1269,8 @@ export default function NodePage() {
                               >
                                 {node.ipv6Dual === 1 ? '关闭 IPv6' : '开启 IPv6'}
                               </DropdownItem>
+                              {/* 清空:清掉这台机器上所有线路/协议/公网转发服务(不可恢复),排在删除前面 */}
+                              <DropdownItem key="purge" className="text-danger">清空</DropdownItem>
                               <DropdownItem key="delete" color="danger" className="text-danger">删除</DropdownItem>
                             </DropdownMenu>
                           </Dropdown>
@@ -1354,7 +1425,8 @@ export default function NodePage() {
                     </span>
                   </div>
 
-                  {/* 操作按钮:6 个动作固定两行三列(安装/编辑/监控 → 重推/指向/删除)。
+                  {/* 操作按钮:7 个动作固定三行三列(安装/编辑/监控 → 重推/指向/清空 → 删除)。
+                      「清空」紧挨在「删除」前面、「删除」永远在最后一个格子里。
                       按钮宽各自按两字文字自适应(w-fit 的网格),不撑满卡片 —— 卡片因此能变窄、一行多排一台 */}
                   <div className="grid w-fit grid-cols-3 gap-1.5">
                     <Button
@@ -1411,6 +1483,18 @@ export default function NodePage() {
                       className="min-h-7 h-7 px-2 text-xs"
                     >
                       指向
+                    </Button>
+                    {/* 清空:这台机器上所有线路/协议/公网转发服务一次清掉(不可恢复),
+                        和实心红「删除」区分开 —— 空心 danger(flat),点了还要手输机器名 */}
+                    <Button
+                      size="sm"
+                      variant="flat"
+                      color="danger"
+                      title="清空这台机器的所有线路和服务"
+                      onPress={() => handlePurge(node)}
+                      className="min-h-7 h-7 px-2 text-xs"
+                    >
+                      清空
                     </Button>
                     <Button
                       size="sm"
@@ -1705,6 +1789,62 @@ export default function NodePage() {
                 </ModalFooter>
               </>
             )}
+          </ModalContent>
+        </Modal>
+
+        {/* 「清空」确认:不可恢复,红色警告 + 普通二次确认 */}
+        <Modal
+          isOpen={!!purgeTarget}
+          onClose={() => { if (!purgeLoading) setPurgeTarget(null); }}
+          size="lg"
+          backdrop="blur"
+          placement="center"
+          isDismissable={!purgeLoading}
+        >
+          <ModalContent>
+            <ModalHeader className="flex flex-col gap-1">
+              <h2 className="text-xl font-bold text-danger">清空「{purgeTarget?.name}」</h2>
+              <span className="text-sm font-normal text-default-500">
+                这台机器上所有线路和服务会被一次清掉,清完它不再对外提供任何服务。
+              </span>
+            </ModalHeader>
+            <ModalBody className="space-y-3">
+              <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2.5">
+                <div className="text-sm font-semibold text-danger">确定要清空吗?会发生:</div>
+                <ul className="mt-1.5 list-disc space-y-1 pl-5 text-xs text-danger leading-relaxed">
+                  <li>
+                    这台机器上<span className="font-semibold">所有线路(
+                      {purgeTarget && lineCounts[purgeTarget.id]
+                        ? `${lineCounts[purgeTarget.id].direct} 条直连 / ${lineCounts[purgeTarget.id].relay} 条中转`
+                        : '直连 + 中转'})</span>会被删除
+                  </li>
+                  <li>所有<span className="font-semibold">公网转发端口会关闭</span></li>
+                  <li>
+                    所有客户会<span className="font-semibold">立即断线,且不可恢复</span>
+                    (配置和分配都删了,只能重建)
+                  </li>
+                  <li><span className="font-semibold">落地信息会从这台机器上被清除</span>(socks5 账号密码一并抹掉)</li>
+                </ul>
+              </div>
+              {purgeTarget && purgeTarget.connectionStatus !== 'online' && (
+                <div className="rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">
+                  面板现在显示这台机器<span className="font-semibold">离线</span>。清空要求机器真的连着面板,
+                  离线会被直接拒绝 —— 点确定前先确认它已经上线。
+                </div>
+              )}
+            </ModalBody>
+            <ModalFooter>
+              <Button variant="light" onPress={() => setPurgeTarget(null)} isDisabled={purgeLoading}>
+                取消
+              </Button>
+              <Button
+                color="danger"
+                onPress={confirmPurge}
+                isLoading={purgeLoading}
+              >
+                {purgeLoading ? '清空中...' : '确认清空'}
+              </Button>
+            </ModalFooter>
           </ModalContent>
         </Modal>
 

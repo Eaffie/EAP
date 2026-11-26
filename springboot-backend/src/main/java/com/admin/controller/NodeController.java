@@ -82,4 +82,20 @@ public class NodeController extends BaseController {
         return id == null ? R.err("缺少节点") : nodeIpv6Switch.disable(Long.valueOf(id.toString()));
     }
 
+    @javax.annotation.Resource
+    private com.admin.service.impl.NodePurgeService nodePurgeService;
+
+    /**
+     * 「清空」这台中转机:所有线路(直连/中转)、协议、公网转发服务全部清掉,
+     * 落地的 socks5 账号密码也从这台机器的 sing-box.json 里覆盖掉;node 行本身保留。
+     * 不可恢复(配置和分配都删了,只能重建),前端点之前会弹一次红色二次确认;机器离线直接拒绝。
+     */
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/purge")
+    public R purge(@RequestBody Map<String, Object> params) {
+        Object id = params == null ? null : params.get("nodeId");
+        return id == null ? R.err("缺少节点") : nodePurgeService.purge(Long.valueOf(id.toString()));
+    }
+
 }
