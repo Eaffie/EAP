@@ -61,11 +61,16 @@ public class PanelAddrSync {
     @Resource
     private JdbcTemplate jdbc;
 
-    /** 下发要等节点响应(最多 10 秒),放单独线程,不卡 WebSocket 建连 */
-    private final ExecutorService pusher = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "panel-addr-push");
-        t.setDaemon(true);
-        return t;
+    /** 下发要等节点响应(最多 10 秒),放单独线程,不卡 WebSocket 建连;几台一起重连也不会排队等半天 */
+    private final ExecutorService pusher = Executors.newFixedThreadPool(4, new java.util.concurrent.ThreadFactory() {
+        private final java.util.concurrent.atomic.AtomicInteger seq = new java.util.concurrent.atomic.AtomicInteger();
+
+        @Override
+        public Thread newThread(Runnable r) {
+            Thread t = new Thread(r, "panel-addr-push-" + seq.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        }
     });
 
     /** nodeId -> 上次成功下发的地址(只存内存:面板重启后重发一次,节点自己会比对,不会白重启) */

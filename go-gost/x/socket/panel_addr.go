@@ -70,12 +70,9 @@ func (w *WebSocketReporter) handleSetPanelAddr(data interface{}) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("生成配置失败: %v", err)
 	}
-	// 先写同目录的临时文件再改名:权限保持原样(安装脚本给的是 600),
-	// 而且不会出现"写到一半掉电,config.json 变半截"的情况
+	// 先写同目录的临时文件再改名:不会出现"写到一半掉电,config.json 变半截"的情况。
+	// 权限固定 0600(config.json 里有节点 secret,安装脚本 install.sh 也是 chmod 600)。
 	mode := os.FileMode(0600)
-	if st, statErr := os.Stat(path); statErr == nil {
-		mode = st.Mode().Perm()
-	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, out, mode); err != nil {
 		return "", fmt.Errorf("写入 %s 失败: %v", tmp, err)
