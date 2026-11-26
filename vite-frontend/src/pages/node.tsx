@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
@@ -15,6 +15,12 @@ import toast from 'react-hot-toast';
 import { copyTextToClipboard } from "@/utils/clipboard";
 import axios from 'axios';
 import NodeMonitorModal from "@/components/node-monitor";
+
+// 视图偏好(卡片 / 列表)存在浏览器里,下次进来还是上次选的那个;搜索词不存
+const NODE_VIEW_KEY = 'eap:node-view';
+const VIEW_CARD = 'card';
+const VIEW_LIST = 'list';
+type NodeView = typeof VIEW_CARD | typeof VIEW_LIST;
 
 
 import {
@@ -127,6 +133,22 @@ export default function NodePage() {
     socks: 0
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // 卡片 / 列表视图(默认卡片)
+  const [viewMode, setViewMode] = useState<NodeView>(() => {
+    try {
+      return localStorage.getItem(NODE_VIEW_KEY) === VIEW_LIST ? VIEW_LIST : VIEW_CARD;
+    } catch {
+      // localStorage 被禁(隐私模式)时按默认来
+      return VIEW_CARD;
+    }
+  });
+  // 搜索框:按机器名 / IP 实时过滤,不持久化
+  const [search, setSearch] = useState('');
+  // 列表视图里的「⋯」菜单:开的是哪台机器 + 面板贴在哪。
+  // 用 fixed 定位(而不是 td 里 absolute):表格外层是 overflow-x-auto,
+  // 里面的绝对定位面板会被裁掉,贴到视口上就没这问题。
+  const [rowMenu, setRowMenu] = useState<{ node: Node; top: number; left: number } | null>(null);
 
   // 「重推配置」按机器跑(整机恢复),存正在跑的那台机器 id
   const [repushing, setRepushing] = useState<number | null>(null);
@@ -478,23 +500,6 @@ export default function NodePage() {
     return parseFloat((bytesPerSecond / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  // 格式化开机时间
-  const formatUptime = (seconds: number): string => {
-    if (seconds === 0) return '-';
-    
-    const days = Math.floor(seconds / 86400);
-    const hours = Math.floor((seconds % 86400) / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    
-    if (days > 0) {
-      return `${days}天${hours}小时`;
-    } else if (hours > 0) {
-      return `${hours}小时${minutes}分钟`;
-    } else {
-      return `${minutes}分钟`;
-    }
-  };
-
   // 格式化流量
   const formatTraffic = (bytes: number): string => {
     if (bytes === 0) return '0 B';
@@ -513,6 +518,106 @@ export default function NodePage() {
     if (value <= 80) return "warning";
     return "danger";
   };
+
+  // 卡片 / 列表上显示的主 IP:入口IP 取第一个(多 IP 时第一个才是主用),没填才退回服务器IP
+  const nodeMainIp = (node: Node): string =>
+    (node.ip || '').split(',')[0].trim() || (node.serverIp || '').trim() || '-';
+
+  // 入口IP 除第一个外还有几个(多 IP 时标个 +N,信息不丢)
+  const nodeIpExtra = (node: Node): number =>
+    (node.ip || '').split(',').map(x => x.trim()).filter(Boolean).length - 1;
+
+  // CPU / 内存:离线或还没上报系统信息就显示 -
+  const usageValue = (node: Node, kind: 'cpu' | 'memory'): number => {
+    if (node.connectionStatus !== 'online' || !node.systemInfo) return 0;
+    return kind === 'cpu' ? node.systemInfo.cpuUsage : node.systemInfo.memoryUsage;
+  };
+
+  const usageText = (node: Node, kind: 'cpu' | 'memory'): string =>
+    node.connectionStatus === 'online' && node.systemInfo ? `${usageValue(node, kind).toFixed(1)}%` : '-';
+
+  // IPv6 小 Chip 上的悬浮说明:原来卡片里那一大块文字压进 title,信息不丢
+  const ipv6Hint = (node: Node): string => {
+    const on = node.ipv6Dual === 1;
+    const sub = node.ipv6Sub === 2 ? '只出 IPv6' : node.ipv6Sub === 1 ? 'IPv4 + IPv6' : '只出 IPv4';
+    const offTip = (node.ipv6Sub === 1 || node.ipv6Sub === 2) && (node.ipv6Dual !== 1 || !node.serverIpv6)
+      ? (node.ipv6Dual !== 1 ? '(未开启 IPv6,暂时只出 IPv4)' : '(没有公网 IPv6 地址,暂时只出 IPv4)')
+      : '';
+    const hasV6 = node.ipv6Dual === 1 || !!node.serverIpv6 || (node.reportedIpv6 || []).length > 0;
+    const lines = [
+      on ? '已开启 IPv6:IPv4 和 IPv6 都收' : '未开启 IPv6:只收 IPv4',
+      `公网 IPv6:${node.serverIpv6 || '未填'}`,
+      `订阅里出:${sub}${offTip}(在「编辑」里改)`,
+    ];
+    // canSwitchListen:true/false = 节点上报过;null/undefined = 离线或面板刚重启还没收到上报,不能说「太旧」
+    if (node.canSwitchListen === false) {
+      lines.push(hasV6 ? '节点程序太旧,先升级节点程序(v14)' : '开关 IPv6 需节点程序 v14');
+    } else if (node.canSwitchListen == null) {
+      lines.push(node.connectionStatus === 'online' ? '等节点上报版本,稍后刷新页面' : (hasV6 ? '节点离线,上线后才能开关 IPv6' : '节点离线'));
+    }
+    return lines.join('\n');
+  };
+
+  // 搜索:机器名 / 入口IP / 服务器IP,大小写不敏感
+  const filteredNodes = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return nodeList;
+    return nodeList.filter(node =>
+      (node.name || '').toLowerCase().includes(q) ||
+      (node.ip || '').toLowerCase().includes(q) ||
+      (node.serverIp || '').toLowerCase().includes(q)
+    );
+  }, [nodeList, search]);
+
+  // 视图偏好落盘;存不了时(隐私模式)忽略,不影响用
+  useEffect(() => {
+    try {
+      localStorage.setItem(NODE_VIEW_KEY, viewMode);
+    } catch {
+      // 忽略
+    }
+  }, [viewMode]);
+
+  // 打开列表里的「⋯」菜单:贴在按钮右下,空间不够就往上 / 往左翻
+  const openRowMenu = (node: Node, e: { currentTarget: HTMLElement }) => {
+    if (rowMenu && rowMenu.node.id === node.id) {
+      setRowMenu(null);
+      return;
+    }
+    const r = e.currentTarget.getBoundingClientRect();
+    const W = 176;  // 面板宽度(w-40 160px)+ 余量
+    const H = 240;  // 面板高度估个够:标题 + 5 个动作
+    let left = Math.max(r.right, W + 8);
+    if (left > window.innerWidth - 8) left = window.innerWidth - 8;
+    let top = r.bottom + 4;
+    if (top + H > window.innerHeight - 8) top = Math.max(8, r.top - 4 - H);
+    setRowMenu({ node, top, left });
+  };
+
+  // 点面板外面 / 滚动 / 按 Esc 都收起来
+  useEffect(() => {
+    if (!rowMenu) return;
+    const onPointerDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      // 点触发按钮或面板本身不算「外面」(点按钮要能切换开关)
+      if (t && t.closest('[data-node-menu]')) return;
+      setRowMenu(null);
+    };
+    const close = () => setRowMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setRowMenu(null);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [rowMenu]);
 
   // 验证IP地址格式
   const validateIp = (ip: string): boolean => {
@@ -883,21 +988,54 @@ export default function NodePage() {
   return (
     
       <div className="px-3 lg:px-6 py-8">
-        {/* 页面头部 */}
-        <div className="flex items-center justify-between mb-6">
-        <div className="flex-1">
-        </div>
+        {/* 页面头部:标题 + 卡片/列表切换 + 搜索 + 新增 */}
+        <div className="flex items-center justify-between gap-3 mb-6 flex-wrap">
+          <h1 className="text-xl font-bold">转发机</h1>
 
-        <Button
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* 视图切换:没装 @heroui/tabs,两个按钮拼一个分组就够了 */}
+            <div className="flex items-center rounded-lg border border-default-200 overflow-hidden">
+              <Button
+                size="sm"
+                variant={viewMode === VIEW_CARD ? 'solid' : 'light'}
+                color={viewMode === VIEW_CARD ? 'primary' : 'default'}
+                className="min-w-0 h-8 px-3 text-xs rounded-none"
+                onPress={() => setViewMode(VIEW_CARD)}
+              >
+                卡片
+              </Button>
+              <Button
+                size="sm"
+                variant={viewMode === VIEW_LIST ? 'solid' : 'light'}
+                color={viewMode === VIEW_LIST ? 'primary' : 'default'}
+                className="min-w-0 h-8 px-3 text-xs rounded-none"
+                onPress={() => setViewMode(VIEW_LIST)}
+              >
+                列表
+              </Button>
+            </div>
+
+            {/* 按机器名 / IP 实时过滤(不持久化) */}
+            <Input
+              size="sm"
+              aria-label="搜索转发机"
+              placeholder="搜索机器名 / IP"
+              className="w-48"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              isClearable
+              onClear={() => setSearch('')}
+            />
+
+            <Button
               size="sm"
               variant="flat"
               color="primary"
               onPress={handleAdd}
-             
             >
               新增
             </Button>
-     
+          </div>
         </div>
 
         {/* 转发机列表 */}
@@ -924,20 +1062,126 @@ export default function NodePage() {
               </div>
             </CardBody>
           </Card>
+        ) : filteredNodes.length === 0 ? (
+          <div className="text-center text-default-400 py-16 text-sm">
+            没有匹配的转发机(换个机器名或 IP 试试)
+          </div>
+        ) : viewMode === VIEW_LIST ? (
+          /* 列表视图:一行一台机器。列和 relay.tsx 的表格一个样式(斑马纹 / border-t / whitespace-nowrap) */
+          <div className="overflow-x-auto rounded-xl border border-default-200">
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="bg-default-50 text-xs text-default-600">
+                  <th className="text-left font-medium px-3 py-2 whitespace-nowrap">状态</th>
+                  <th className="text-left font-medium px-3 py-2 whitespace-nowrap">机器名</th>
+                  <th className="text-left font-medium px-3 py-2 whitespace-nowrap">IP</th>
+                  <th className="text-right font-medium px-3 py-2 whitespace-nowrap">CPU</th>
+                  <th className="text-right font-medium px-3 py-2 whitespace-nowrap">内存</th>
+                  <th className="text-left font-medium px-3 py-2 whitespace-nowrap">上传/下载</th>
+                  <th className="text-right font-medium px-3 py-2 whitespace-nowrap">上行/下行</th>
+                  <th className="text-left font-medium px-3 py-2 whitespace-nowrap">版本</th>
+                  <th className="text-right font-medium px-3 py-2 whitespace-nowrap">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredNodes.map((node, idx) => {
+                  const online = node.connectionStatus === 'online';
+                  const sys = online ? node.systemInfo : null;
+                  const extraIp = nodeIpExtra(node);
+                  return (
+                    <tr
+                      key={node.id}
+                      className={"border-t border-default-100 " + (idx % 2 === 1 ? "bg-default-50" : "")}
+                    >
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <Chip size="sm" variant="flat" color={online ? 'success' : 'danger'}>
+                          {online ? '在线' : '离线'}
+                        </Chip>
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <span className="font-semibold">🖥 {node.name}</span>
+                        {/* sing-box 挂了这里照样「在线」,单独标一下(「⋯」里有重推配置) */}
+                        {online && node.singboxRunning === false
+                          && (inboundNodeIds === null || inboundNodeIds.has(node.id)) && (
+                          <span className="ml-2 text-[11px] text-danger" title="sing-box 没在跑,这台机上用 sing-box 的协议全部不可用">
+                            ⚠️ sing-box
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap font-mono text-xs text-default-600" title={node.ip || ''}>
+                        {nodeMainIp(node)}{extraIp > 0 ? ` +${extraIp}` : ''}
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap text-right text-xs tabular-nums">{usageText(node, 'cpu')}</td>
+                      <td className="px-3 py-2 whitespace-nowrap text-right text-xs tabular-nums">{usageText(node, 'memory')}</td>
+                      <td className="px-3 py-2 whitespace-nowrap font-mono text-xs text-default-600">
+                        ↑{sys ? formatSpeed(sys.uploadSpeed) : '-'} ↓{sys ? formatSpeed(sys.downloadSpeed) : '-'}
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap text-right text-xs tabular-nums">
+                        {sys ? `${formatTraffic(sys.uploadTraffic)} / ${formatTraffic(sys.downloadTraffic)}` : '-'}
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap text-xs font-mono">{node.version || '未知'}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <span className="flex items-center justify-end gap-1">
+                          {/* 用最多的两个直接摆出来,其余收进「⋯」 */}
+                          <Button
+                            size="sm"
+                            variant="flat"
+                            color="success"
+                            className="min-w-0 h-7 px-2 text-xs"
+                            isLoading={node.copyLoading}
+                            onPress={() => handleCopyInstallCommand(node)}
+                          >
+                            安装命令
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="flat"
+                            color="primary"
+                            className="min-w-0 h-7 px-2 text-xs"
+                            onPress={() => handleEdit(node)}
+                          >
+                            编辑
+                          </Button>
+                          {/* 「⋯」= 其余动作:监控 / 重推配置 / 指向这台机器 / IPv6 / 删除 */}
+                          <span
+                            data-node-menu="1"
+                            className="inline-flex"
+                            title="更多操作"
+                            onClick={(e) => openRowMenu(node, e)}
+                          >
+                            <Button size="sm" variant="flat" className="min-w-0 h-7 px-2 text-xs" aria-label="更多操作">
+                              ⋯
+                            </Button>
+                          </span>
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
-            {nodeList.map((node) => (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
+            {filteredNodes.map((node) => {
+              const online = node.connectionStatus === 'online';
+              const sys = online ? node.systemInfo : null;
+              const v6on = node.ipv6Dual === 1;
+              const extraIp = nodeIpExtra(node);
+              return (
               <Card 
                 key={node.id} 
                 className="shadow-sm border border-divider hover:shadow-md transition-shadow duration-200"
               >
-                <CardHeader className="pb-2">
-                  <div className="flex justify-between items-start w-full">
+                <CardHeader className="pb-1 pt-3 px-3">
+                  <div className="flex justify-between items-start w-full gap-2">
                     <div className="flex-1 min-w-0">
-                      <h3 className="font-semibold text-foreground truncate text-sm">{node.name}</h3>
-                      <p className="text-xs text-default-500 truncate">{node.serverIp}</p>
+                      <h3 className="font-semibold text-foreground truncate text-sm" title={node.name}>🖥 {node.name}</h3>
+                      <p className="font-mono text-xs text-default-500 truncate" title={node.ip || ''}>
+                        {nodeMainIp(node)}{extraIp > 0 ? ` +${extraIp}` : ''}
+                      </p>
                     </div>
-                    <div className="flex items-center gap-1.5 ml-2">
+                    <div className="flex items-center gap-1 shrink-0">
                       <Chip 
                         color={node.connectionStatus === 'online' ? 'success' : 'danger'} 
                         variant="flat" 
@@ -946,11 +1190,24 @@ export default function NodePage() {
                       >
                         {node.connectionStatus === 'online' ? '在线' : '离线'}
                       </Chip>
+                      {/* IPv6 从原来的大方块降级成标题栏上的小 Chip;点了还是走原来那个确认框 */}
+                      <Button
+                        size="sm"
+                        variant="flat"
+                        color={v6on ? 'success' : 'default'}
+                        className="min-w-0 min-h-6 h-6 px-2 text-[11px] gap-0.5"
+                        isDisabled={node.canSwitchListen === false}
+                        isLoading={node.ipv6Loading}
+                        title={ipv6Hint(node)}
+                        onPress={() => setIpv6Confirm({ node, enable: !v6on })}
+                      >
+                        IPv6<span className="text-[9px] leading-none">{v6on ? '●' : '○'}</span>
+                      </Button>
                     </div>
                   </div>
                 </CardHeader>
 
-                <CardBody className="pt-0 pb-3">
+                <CardBody className="pt-0 pb-3 px-3">
                   {/* 「在线」只代表 gost 活着。sing-box 是另一个服务,它挂了这里照样绿,
                       但那台机上的协议全都用不了 —— 必须单独标出来 */}
                   {node.connectionStatus === 'online' && node.singboxRunning === false
@@ -982,249 +1239,181 @@ export default function NodePage() {
                       </div>
                     )
                   )}
-                  {/* 基础信息 */}
-                  <div className="space-y-2 mb-4">
-                    <div className="flex justify-between items-center text-sm min-w-0">
-                      <span className="text-default-600 flex-shrink-0">入口IP</span>
-                      <div className="text-right text-xs min-w-0 flex-1 ml-2">
-                        {node.ip ? (
-                          node.ip.split(',').length > 1 ? (
-                            <span className="font-mono truncate block" title={node.ip.split(',')[0].trim()}>
-                              {node.ip.split(',')[0].trim()} +{node.ip.split(',').length - 1}个
-                            </span>
-                          ) : (
-                            <span className="font-mono truncate block" title={node.ip.trim()}>
-                              {node.ip.trim()}
-                            </span>
-                          )
-                        ) : '-'}
-                      </div>
+                  {/* CPU / 内存:一行两个细进度条 + 百分比(原来两块大方块) */}
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="flex flex-1 min-w-0 items-center gap-1.5 text-xs">
+                      <span className="text-default-500 shrink-0">CPU</span>
+                      <span className="w-11 shrink-0 text-right font-mono tabular-nums">{usageText(node, 'cpu')}</span>
+                      <Progress
+                        value={usageValue(node, 'cpu')}
+                        color={getProgressColor(usageValue(node, 'cpu'), !online)}
+                        size="sm"
+                        aria-label="CPU使用率"
+                        classNames={{ base: 'flex-1 w-auto', track: 'h-1.5' }}
+                      />
                     </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-default-600">端口</span>
-                      <span className="text-xs">{node.portSta}-{node.portEnd}</span>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-default-600">版本</span>
-                      <span className="text-xs">{node.version || '未知'}</span>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-default-600">开机时间</span>
-                      <span className="text-xs">
-                        {node.connectionStatus === 'online' && node.systemInfo 
-                          ? formatUptime(node.systemInfo.uptime)
-                          : '-'
-                        }
-                      </span>
+                    <div className="flex flex-1 min-w-0 items-center gap-1.5 text-xs">
+                      <span className="text-default-500 shrink-0">内存</span>
+                      <span className="w-11 shrink-0 text-right font-mono tabular-nums">{usageText(node, 'memory')}</span>
+                      <Progress
+                        value={usageValue(node, 'memory')}
+                        color={getProgressColor(usageValue(node, 'memory'), !online)}
+                        size="sm"
+                        aria-label="内存使用率"
+                        classNames={{ base: 'flex-1 w-auto', track: 'h-1.5' }}
+                      />
                     </div>
                   </div>
 
-                  {/* 系统监控 */}
-                  <div className="space-y-3 mb-4">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <div className="flex justify-between text-xs mb-1">
-                          <span>CPU</span>
-                          <span className="font-mono">
-                            {node.connectionStatus === 'online' && node.systemInfo 
-                              ? `${node.systemInfo.cpuUsage.toFixed(1)}%` 
-                              : '-'
-                            }
-                          </span>
-                        </div>
-                        <Progress
-                          value={node.connectionStatus === 'online' && node.systemInfo ? node.systemInfo.cpuUsage : 0}
-                          color={getProgressColor(
-                            node.connectionStatus === 'online' && node.systemInfo ? node.systemInfo.cpuUsage : 0,
-                            node.connectionStatus !== 'online'
-                          )}
-                          size="sm"
-                          aria-label="CPU使用率"
-                        />
-                      </div>
-                      <div>
-                        <div className="flex justify-between text-xs mb-1">
-                          <span>内存</span>
-                          <span className="font-mono">
-                            {node.connectionStatus === 'online' && node.systemInfo 
-                              ? `${node.systemInfo.memoryUsage.toFixed(1)}%` 
-                              : '-'
-                            }
-                          </span>
-                        </div>
-                        <Progress
-                          value={node.connectionStatus === 'online' && node.systemInfo ? node.systemInfo.memoryUsage : 0}
-                          color={getProgressColor(
-                            node.connectionStatus === 'online' && node.systemInfo ? node.systemInfo.memoryUsage : 0,
-                            node.connectionStatus !== 'online'
-                          )}
-                          size="sm"
-                          aria-label="内存使用率"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2 text-xs">
-                      <div className="text-center p-2 bg-default-50 dark:bg-default-100 rounded">
-                        <div className="text-default-600 mb-0.5">上传</div>
-                        <div className="font-mono">
-                          {node.connectionStatus === 'online' && node.systemInfo 
-                            ? formatSpeed(node.systemInfo.uploadSpeed) 
-                            : '-'
-                          }
-                        </div>
-                      </div>
-                      <div className="text-center p-2 bg-default-50 dark:bg-default-100 rounded">
-                        <div className="text-default-600 mb-0.5">下载</div>
-                        <div className="font-mono">
-                          {node.connectionStatus === 'online' && node.systemInfo 
-                            ? formatSpeed(node.systemInfo.downloadSpeed) 
-                            : '-'
-                          }
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* 流量统计 */}
-                    <div className="grid grid-cols-2 gap-2 text-xs">
-                      <div className="text-center p-2 bg-primary-50 dark:bg-primary-100/20 rounded border border-primary-200 dark:border-primary-300/20">
-                        <div className="text-primary-600 dark:text-primary-400 mb-0.5">↑ 上行流量</div>
-                        <div className="font-mono text-primary-700 dark:text-primary-300">
-                          {node.connectionStatus === 'online' && node.systemInfo 
-                            ? formatTraffic(node.systemInfo.uploadTraffic) 
-                            : '-'
-                          }
-                        </div>
-                      </div>
-                      <div className="text-center p-2 bg-success-50 dark:bg-success-100/20 rounded border border-success-200 dark:border-success-300/20">
-                        <div className="text-success-600 dark:text-success-400 mb-0.5">↓ 下行流量</div>
-                        <div className="font-mono text-success-700 dark:text-success-300">
-                          {node.connectionStatus === 'online' && node.systemInfo 
-                            ? formatTraffic(node.systemInfo.downloadTraffic) 
-                            : '-'
-                          }
-                        </div>
-                      </div>
-                    </div>
+                  {/* 上传 / 下载:一行小字(原来两块大方块) */}
+                  <div className="flex items-center gap-3 text-xs mb-1">
+                    <span className="font-mono tabular-nums text-default-600">
+                      ↑ {sys ? formatSpeed(sys.uploadSpeed) : '-'}
+                    </span>
+                    <span className="font-mono tabular-nums text-default-600">
+                      ↓ {sys ? formatSpeed(sys.downloadSpeed) : '-'}
+                    </span>
                   </div>
 
-                  {/* IPv6 */}
-                  <div className="mb-3 p-2 rounded border border-divider text-xs space-y-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-default-600">IPv6</span>
-                      <span className="font-mono truncate" title={node.serverIpv6 || ''}>
-                        {node.serverIpv6 || '未填'}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className={node.ipv6Dual === 1 ? 'text-success-600' : 'text-default-500'}>
-                        {node.ipv6Dual === 1 ? '已开启 IPv6(IPv4 和 IPv6 都收)' : '未开启'}
-                      </span>
-                      <Button
-                        size="sm"
-                        variant="flat"
-                        color={node.ipv6Dual === 1 ? 'warning' : 'primary'}
-                        className="min-h-7 h-7"
-                        isDisabled={node.canSwitchListen === false}
-                        isLoading={node.ipv6Loading}
-                        onPress={() => setIpv6Confirm({ node, enable: node.ipv6Dual !== 1 })}
-                      >
-                        {node.ipv6Dual === 1 ? '关闭 IPv6' : '开启 IPv6'}
-                      </Button>
-                    </div>
-                    {(() => {
-                      // canSwitchListen:true/false = 节点上报过;null/undefined = 离线或面板刚重启还没收到上报,不能说「太旧」
-                      const hasV6 = node.ipv6Dual === 1 || !!node.serverIpv6 || (node.reportedIpv6 || []).length > 0;
-                      if (node.canSwitchListen === false) {
-                        return hasV6
-                          ? <div className="text-warning-600">节点程序太旧,先升级节点程序(v14)</div>
-                          : <div className="text-default-400">开关 IPv6 需节点程序 v14</div>;
-                      }
-                      if (node.canSwitchListen == null) {
-                        if (node.connectionStatus === 'online') {
-                          return <div className="text-default-400">等节点上报版本,稍后刷新页面</div>;
-                        }
-                        return hasV6 ? <div className="text-default-400">节点离线,上线后才能开关 IPv6</div> : null;
-                      }
-                      return null;
-                    })()}
-                    <div className="text-default-500">
-                      订阅里出:{node.ipv6Sub === 2 ? '只出 IPv6' : node.ipv6Sub === 1 ? 'IPv4 + IPv6' : '只出 IPv4'}
-                      {(node.ipv6Sub === 1 || node.ipv6Sub === 2) && (node.ipv6Dual !== 1 || !node.serverIpv6)
-                        ? (node.ipv6Dual !== 1 ? '(未开启 IPv6,暂时只出 IPv4)' : '(没有公网 IPv6 地址,暂时只出 IPv4)') : ''}
-                      (在「编辑」里改)
-                    </div>
+                  {/* 上下行流量 + 版本:挤成一行小字 */}
+                  <div className="flex items-center justify-between gap-2 text-xs mb-2.5">
+                    <span className="min-w-0 truncate">
+                      <span className="text-default-500">上行 </span>
+                      <span className="font-mono tabular-nums text-primary">{sys ? formatTraffic(sys.uploadTraffic) : '-'}</span>
+                      <span className="text-default-500 ml-2">下行 </span>
+                      <span className="font-mono tabular-nums text-success">{sys ? formatTraffic(sys.downloadTraffic) : '-'}</span>
+                    </span>
+                    <span className="shrink-0 text-default-500">
+                      版本 <span className="font-mono">{node.version || '未知'}</span>
+                    </span>
                   </div>
 
-                  {/* 操作按钮 */}
-                  <div className="space-y-1.5">
-                    <div className="flex gap-1.5">
-                      <Button
-                        size="sm"
-                        variant="flat"
-                        color="success"
-                        onPress={() => handleCopyInstallCommand(node)}
-                        isLoading={node.copyLoading}
-                        className="flex-1 min-h-8"
-                      >
-                        安装命令
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="flat"
-                        color="primary"
-                        onPress={() => handleEdit(node)}
-                        className="flex-1 min-h-8"
-                      >
-                        编辑
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="flat"
-                        color="secondary"
-                        onPress={() => setMonitorNode(node)}
-                        className="flex-1 min-h-8"
-                      >
-                        监控
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="flat"
-                        color="danger"
-                        onPress={() => handleDelete(node)}
-                        className="flex-1 min-h-8"
-                      >
-                        删除
-                      </Button>
-                    </div>
+                  {/* 操作按钮:6 个动作全平铺,2 行 × 3 列(顺序 安装命令/编辑/监控 → 重推配置/指向这台机器/删除) */}
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <Button
+                      size="sm"
+                      variant="flat"
+                      color="success"
+                      onPress={() => handleCopyInstallCommand(node)}
+                      isLoading={node.copyLoading}
+                      className="min-w-0 min-h-7 h-7 px-1 text-xs"
+                    >
+                      安装命令
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="flat"
+                      color="primary"
+                      onPress={() => handleEdit(node)}
+                      className="min-w-0 min-h-7 h-7 px-1 text-xs"
+                    >
+                      编辑
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="flat"
+                      color="secondary"
+                      onPress={() => setMonitorNode(node)}
+                      className="min-w-0 min-h-7 h-7 px-1 text-xs"
+                    >
+                      监控
+                    </Button>
                     {/* 整机重推:这台机器名下所有线路的 sing-box + gost 服务一起按库里重铺,
                         换机器/机器重装后 gost 公网口全没了时用 */}
-                    <div className="flex gap-1.5">
-                      <Button
-                        size="sm"
-                        variant="flat"
-                        color="warning"
-                        onPress={() => handleRepush(node)}
-                        isLoading={repushing === node.id}
-                        className="flex-1 min-h-8"
-                      >
-                        重推配置
-                      </Button>
-                      {/* 换机器/换 IP 时,直接把「连接域名」的 A 记录指到这台机器,不用去 Cloudflare 网页改 */}
-                      <Button
-                        size="sm"
-                        variant="flat"
-                        color="primary"
-                        onPress={() => openPoint(node)}
-                        className="flex-1 min-h-8"
-                      >
-                        指向这台机器
-                      </Button>
-                    </div>
+                    <Button
+                      size="sm"
+                      variant="flat"
+                      color="warning"
+                      onPress={() => handleRepush(node)}
+                      isLoading={repushing === node.id}
+                      className="min-w-0 min-h-7 h-7 px-1 text-xs"
+                    >
+                      重推配置
+                    </Button>
+                    {/* 换机器/换 IP 时,直接把「连接域名」的 A 记录指到这台机器,不用去 Cloudflare 网页改 */}
+                    <Button
+                      size="sm"
+                      variant="flat"
+                      color="primary"
+                      onPress={() => openPoint(node)}
+                      className="min-w-0 min-h-7 h-7 px-1 text-xs"
+                    >
+                      指向这台机器
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="flat"
+                      color="danger"
+                      onPress={() => handleDelete(node)}
+                      className="min-w-0 min-h-7 h-7 px-1 text-xs"
+                    >
+                      删除
+                    </Button>
                   </div>
                 </CardBody>
               </Card>
-            ))}
+              );
+            })}
+          </div>
+        )}
+
+        {/* 列表视图的「⋯」菜单:放不进这一行的动作都在这(监控 / 重推配置 / 指向这台机器 / IPv6 / 删除)。
+            用 fixed 而不是表格里的 absolute —— 表格外层是 overflow-x-auto,absolute 会被裁掉;
+            点面板外面 / 滚动 / Esc 都关(见上面那个 useEffect) */}
+        {rowMenu && (
+          <div
+            data-node-menu="1"
+            className="fixed z-50 w-40 flex flex-col gap-0.5 rounded-lg border border-default-200 bg-content1 p-1 shadow-lg"
+            style={{ top: rowMenu.top, left: rowMenu.left, transform: 'translateX(-100%)' }}
+          >
+            <div className="truncate px-2 py-1 text-[11px] text-default-400">🖥 {rowMenu.node.name}</div>
+            <Button
+              size="sm"
+              variant="flat"
+              color="secondary"
+              className="justify-start min-h-7 h-7 px-2 text-xs"
+              onPress={() => { const n = rowMenu.node; setRowMenu(null); setMonitorNode(n); }}
+            >
+              监控
+            </Button>
+            <Button
+              size="sm"
+              variant="flat"
+              color="warning"
+              className="justify-start min-h-7 h-7 px-2 text-xs"
+              onPress={() => { const n = rowMenu.node; setRowMenu(null); handleRepush(n); }}
+            >
+              重推配置
+            </Button>
+            <Button
+              size="sm"
+              variant="flat"
+              color="primary"
+              className="justify-start min-h-7 h-7 px-2 text-xs"
+              onPress={() => { const n = rowMenu.node; setRowMenu(null); openPoint(n); }}
+            >
+              指向这台机器
+            </Button>
+            <Button
+              size="sm"
+              variant="flat"
+              color={rowMenu.node.ipv6Dual === 1 ? 'warning' : 'primary'}
+              className="justify-start min-h-7 h-7 px-2 text-xs"
+              isDisabled={rowMenu.node.canSwitchListen === false}
+              title={ipv6Hint(rowMenu.node)}
+              onPress={() => { const n = rowMenu.node; setRowMenu(null); setIpv6Confirm({ node: n, enable: n.ipv6Dual !== 1 }); }}
+            >
+              {rowMenu.node.ipv6Dual === 1 ? '关闭 IPv6' : '开启 IPv6'}
+            </Button>
+            <Button
+              size="sm"
+              variant="flat"
+              color="danger"
+              className="justify-start min-h-7 h-7 px-2 text-xs"
+              onPress={() => { const n = rowMenu.node; setRowMenu(null); handleDelete(n); }}
+            >
+              删除
+            </Button>
           </div>
         )}
 
