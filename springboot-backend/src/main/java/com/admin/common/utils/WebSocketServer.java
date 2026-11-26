@@ -5,6 +5,7 @@ import com.admin.common.aop.LogRedact;
 import com.admin.common.dto.GostConfigDto;
 import com.admin.common.dto.GostDto;
 import com.admin.common.task.CheckGostConfigAsync;
+import com.admin.common.task.PanelAddrSync;
 import com.admin.entity.Node;
 import com.admin.monitor.MetricCollector;
 import com.admin.monitor.ProbeService;
@@ -442,6 +443,9 @@ public class WebSocketServer extends TextWebSocketHandler {
 
                             if (future != null) {
                                 GostDto result = new GostDto();
+                                // 节点回的 success 以前被丢掉了,调用方只能靠 msg 猜成败。这里带上:
+                                // 1 = 成功、0 = 失败(SetPanelAddr 要靠它判断节点到底改没改地址)
+                                result.setCode(responseJson.getBooleanValue("success") ? 1 : 0);
                                 
                                 // 根据响应类型处理不同的数据
                                 if ("PingResponse".equals(responseType) && responseData != null) {
@@ -663,6 +667,13 @@ public class WebSocketServer extends TextWebSocketHandler {
 
                         // 下发延迟监测目标(异步;老版本节点直接跳过)
                         ProbeService.onNodeConnected(nodeId, version);
+
+                        // 下发面板地址(域名变了让节点跟着改;异步 + 内部全兜异常,失败不影响建连)
+                        try {
+                            PanelAddrSync.onNodeConnected(nodeId, version);
+                        } catch (Exception e) {
+                            log.info("安排面板地址下发失败: {}", e.getMessage());
+                        }
                     } else {
                         log.info("节点 {} 状态更新失败", nodeId);
                     }

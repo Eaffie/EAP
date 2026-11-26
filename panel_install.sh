@@ -316,6 +316,14 @@ get_frontend_port() {
   [ -z "$fport" ] && fport="6366"
   echo "$fport"
 }
+# 取面板后端端口(.env 里的,默认 6365):安装命令的 -a、节点连面板都走这个端口
+# (install_panel 里的 BACKEND_PORT 只在安装那次进程里有,`eap domain` 是新进程,得从 .env 读)
+get_backend_port() {
+  local bport=""
+  [ -f ".env" ] && bport="$(grep '^BACKEND_PORT=' .env | cut -d'=' -f2)"
+  [ -z "$bport" ] && bport="6365"
+  echo "$bport"
+}
 
 # 查看访问信息(地址 / 默认账号)
 show_access_info() {
@@ -1417,6 +1425,8 @@ domain_off() {
   echo "🧹 关闭域名访问..."
   docker rm -f "$CADDY_CONTAINER" 2>/dev/null || true
   rm -f "$CADDY_FILE" 2>/dev/null || true
+  # 面板地址跟着改回去:不然节点还拿着一个已经不解析到本机的域名去连
+  _apply_panel_addr ""
   echo "✅ 已关闭。面板回到 http://$(get_server_ip):$(get_frontend_port)"
   echo "ℹ️  证书数据还留在 docker 卷 eap_caddy_data 里,下次开同一域名不用重新申请。"
 }
@@ -1532,6 +1542,11 @@ EOF
   fi
   echo "   ✔ 容器已启动"
 
+  # ---- 4.5 面板地址跟着域名走 ----
+  # 「网站配置」里的面板后端地址(安装命令的 -a、节点连面板的地址)改成「域名:后端端口」。
+  # 这里就能改:节点连的是后端端口(默认 6365),不依赖 443 的证书有没有下来。
+  _apply_panel_addr "$domain"
+
   # ---- 5. 等证书 ----
   echo "[5/5] 等 Let's Encrypt 签发证书(最多 60 秒)..."
   local ok=0 i
@@ -1645,6 +1660,50 @@ _sql_exec() {
 _sql_scalar() {
   docker exec eap-mysql mysql --default-character-set=utf8mb4 \
     -u "$MYSQL_AS" -p"$DB_PASSWORD" "$DB_NAME" -N -B -e "$1" 2>/dev/null | tr -d '\r' | head -1
+}
+
+# 面板地址跟着域名走(eap domain 每次都会调)。
+# 「网站配置 → 面板后端地址」(vite_config.ip)是【安装命令 -a】和【节点连面板】的唯一来源,所以:
+#   · 配上域名 → 写成「域名:后端端口」,另存一条 panel_domain(后端算节点该连哪个地址时用它兜底)
+#   · 关掉域名 → 写回「IP:后端端口」,并删掉 panel_domain
+# 已经在跑的节点不用挨台去改:它们连上面板时后端会把新地址推下去(SetPanelAddr,需节点端 1.2.7+)。
+# 端口从 .env 读,拿不到就是 6365 —— 这里【不要】写死端口,有人装的时候改过。
+# 数据库连不上不阻断域名本身(域名已经能用),只提示一句让人到「网站配置」手改。
+_apply_panel_addr() {
+  local domain="$1"   # 空串 = 关掉域名,回到 IP
+  local bport value existing now
+  bport="$(get_backend_port)"
+  if [ -n "$domain" ]; then
+    value="${domain}:${bport}"
+  else
+    value="$(get_server_ip):${bport}"
+  fi
+
+  if ! _load_db_cfg >/dev/null 2>&1 || ! _pick_mysql_user >/dev/null 2>&1; then
+    echo "   ⚠️  连不上数据库,面板后端地址没跟着改 —— 请到面板「网站配置」把「面板后端地址」改成 ${value}"
+    return 0
+  fi
+
+  now=$(( $(date +%s) * 1000 ))
+  existing="$(_sql_scalar "SELECT value FROM vite_config WHERE name='ip' LIMIT 1")"
+  if [ -n "$existing" ]; then
+    _sql_exec "UPDATE vite_config SET value='${value}', time=${now} WHERE name='ip';"
+  else
+    _sql_exec "INSERT INTO vite_config (name, value, time) VALUES ('ip', '${value}', ${now});"
+  fi
+
+  if [ -n "$domain" ]; then
+    existing="$(_sql_scalar "SELECT value FROM vite_config WHERE name='panel_domain' LIMIT 1")"
+    if [ -n "$existing" ]; then
+      _sql_exec "UPDATE vite_config SET value='${domain}', time=${now} WHERE name='panel_domain';"
+    else
+      _sql_exec "INSERT INTO vite_config (name, value, time) VALUES ('panel_domain', '${domain}', ${now});"
+    fi
+    echo "   ✔ 面板后端地址已改为 ${value}(节点连上来后会自动跟着改)"
+  else
+    _sql_exec "DELETE FROM vite_config WHERE name='panel_domain';"
+    echo "   ✔ 面板后端地址已改回 ${value}"
+  fi
 }
 
 # 恢复备份 —— 全脚本唯一一个会毁数据的操作,守卫都在这里。

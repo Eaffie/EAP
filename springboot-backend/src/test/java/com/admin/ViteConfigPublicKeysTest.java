@@ -6,7 +6,6 @@ import com.admin.controller.BaseController;
 import com.admin.controller.ViteConfigController;
 import com.admin.entity.User;
 import com.admin.service.ViteConfigService;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -27,28 +26,17 @@ class ViteConfigPublicKeysTest {
 
     static ViteConfigController ctl;
     static ViteConfigService svc;
-    static Object oldSecret;
 
     @BeforeAll
     static void setUp() throws Exception {
-        Field f = JwtUtil.class.getDeclaredField("SECRET_KEY");
-        f.setAccessible(true);
-        oldSecret = f.get(null);
-        f.set(null, "unit-test-secret-key-0123456789abcdef");
+        // 密钥统一走 PanelSecret(优先 vite_config.jwt_secret,其次 .env)。这里是单测,没有 Spring,
+        // 签发和校验用的是同一个兜底值,自洽即可,不用再往 JwtUtil 里塞密钥。
         svc = Mockito.mock(ViteConfigService.class);
         Mockito.when(svc.getConfigByName(Mockito.anyString())).thenAnswer((inv) -> R.ok("value-of-" + inv.getArgument(0)));
         ctl = new ViteConfigController();
         Field s = BaseController.class.getDeclaredField("viteConfigService");
         s.setAccessible(true);
         s.set(ctl, svc);
-    }
-
-    // 测完把密钥还原,别影响排在后面、靠 Spring 注入密钥的测试
-    @AfterAll
-    static void tearDown() throws Exception {
-        Field f = JwtUtil.class.getDeclaredField("SECRET_KEY");
-        f.setAccessible(true);
-        f.set(null, oldSecret);
     }
 
     static String token(int roleId) {
@@ -88,6 +76,19 @@ class ViteConfigPublicKeysTest {
     @Test
     void adminReadsEverything() {
         assertFalse(denied(get("ip", token(0))));
+    }
+
+    /**
+     * 面板密钥(jwt_secret)谁都读不到 —— 包括管理员。
+     * 备份导出会把它写进备份文件,恢复后它在库里;这个接口是「网站配置」页读配置用的,
+     * 一旦返回就等于把 JWT 签名和 Cloudflare Token 的加密口令直接送出去。
+     */
+    @Test
+    void panelSecretIsNeverReadable() {
+        assertTrue(denied(get("jwt_secret", token(0))));
+        assertTrue(denied(get("JWT_SECRET", token(0))));
+        assertTrue(denied(get("jwt_secret", token(1))));
+        assertTrue(denied(get("jwt_secret", null)));
     }
 
     @Test

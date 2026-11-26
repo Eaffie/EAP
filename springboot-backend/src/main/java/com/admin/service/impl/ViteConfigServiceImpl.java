@@ -4,6 +4,7 @@ import com.admin.entity.ViteConfig;
 import com.admin.mapper.ViteConfigMapper;
 import com.admin.service.ViteConfigService;
 import com.admin.common.lang.R;
+import com.admin.common.utils.PanelSecret;
 import com.admin.common.utils.SubUrlRule;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
@@ -38,9 +39,10 @@ public class ViteConfigServiceImpl extends ServiceImpl<ViteConfigMapper, ViteCon
     // ========== 公共接口实现 ==========
 
     /**
-     * 获取所有网站配置
-     * 
-     * @return 包含所有配置的Map
+     * 获取所有网站配置。
+     *
+     * 【必须过滤 jwt_secret】这条是面板密钥(备份恢复时写进来的),给前端等于把签名和 DNS 加密的
+     * 口令直接送出去;而且网站配置页是整表提交的,返回了它、保存时又会把它写回来。
      */
     @Override
     public R getConfigs() {
@@ -48,6 +50,9 @@ public class ViteConfigServiceImpl extends ServiceImpl<ViteConfigMapper, ViteCon
         Map<String, String> configMap = new HashMap<>();
         
         for (ViteConfig config : configList) {
+            if (PanelSecret.isSecretKey(config.getName())) {
+                continue;
+            }
             configMap.put(config.getName(), config.getValue());
         }
         
@@ -64,6 +69,10 @@ public class ViteConfigServiceImpl extends ServiceImpl<ViteConfigMapper, ViteCon
     public R getConfigByName(String name) {
         if (!StringUtils.hasText(name)) {
             return R.err(ERROR_CONFIG_NAME_REQUIRED);
+        }
+        // 面板密钥不给(和「键不存在」同样的回复,不暴露有没有这个键)
+        if (PanelSecret.isSecretKey(name)) {
+            return R.err(ERROR_CONFIG_NOT_FOUND);
         }
 
         QueryWrapper<ViteConfig> queryWrapper = new QueryWrapper<>();
@@ -110,6 +119,10 @@ public class ViteConfigServiceImpl extends ServiceImpl<ViteConfigMapper, ViteCon
                 if (!StringUtils.hasText(name)) {
                     continue; // 跳过无效的配置名
                 }
+                // 面板密钥不接受前端写入(网站配置页整表提交,静默跳过而不是整批失败)
+                if (PanelSecret.isSecretKey(name)) {
+                    continue;
+                }
                 if (SubUrlRule.KEY.equals(name)) {
                     value = subUrl;
                 }
@@ -134,6 +147,10 @@ public class ViteConfigServiceImpl extends ServiceImpl<ViteConfigMapper, ViteCon
         // 1. 验证必填字段
         if (!StringUtils.hasText(name)) {
             return R.err(ERROR_CONFIG_NAME_REQUIRED);
+        }
+        // 面板密钥只能由备份/恢复这条链路写入,接口一律拒绝
+        if (PanelSecret.isSecretKey(name)) {
+            return R.err(ERROR_CONFIG_NOT_FOUND);
         }
         if (!StringUtils.hasText(value)) {
             return R.err(ERROR_CONFIG_VALUE_REQUIRED);

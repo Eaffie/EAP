@@ -5,6 +5,7 @@ import com.admin.common.dto.DnsPointDto;
 import com.admin.common.dto.DnsRecordDto;
 import com.admin.common.lang.R;
 import com.admin.common.utils.AESCrypto;
+import com.admin.common.utils.PanelSecret;
 import com.admin.entity.CfAccount;
 import com.admin.mapper.CfAccountMapper;
 import com.admin.service.DnsService;
@@ -15,7 +16,6 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -61,11 +61,10 @@ public class DnsServiceImpl extends ServiceImpl<CfAccountMapper, CfAccount> impl
     private RestTemplate restTemplate;
 
     /**
-     * token 的加密口令。用部署时随机生成的 jwt-secret(在 .env 里,升级/重启都不变):
-     * 写死常量的话,这个公开仓库里的密钥等于没有;换成 jwt-secret,想解密得先拿到面板 .env。
+     * token 的加密口令。密钥统一走 PanelSecret:优先库里 vite_config.jwt_secret(备份恢复会带过来),
+     * 其次 .env 的 JWT_SECRET。以前只认 .env,换机器后 .env 里的值一变,DNS 账号就得全部重填。
      */
-    @Value("${jwt-secret:eap-dns}")
-    private String cryptoSecret;
+    private volatile String cryptoKey;
 
     private volatile AESCrypto crypto;
 
@@ -486,17 +485,19 @@ public class DnsServiceImpl extends ServiceImpl<CfAccountMapper, CfAccount> impl
     }
 
     private AESCrypto aes() {
+        String key = PanelSecret.jwtSecret() + "|eap-dns";
         AESCrypto c = crypto;
-        if (c == null) {
-            synchronized (this) {
-                c = crypto;
-                if (c == null) {
-                    c = AESCrypto.create(cryptoSecret + "|eap-dns");
-                    crypto = c;
-                }
-            }
+        if (c != null && key.equals(cryptoKey)) {
+            return c;
         }
-        return c;
+        synchronized (this) {
+            // 恢复完密钥会变:密钥串不一样就重建加密器,不能一直用启动时那个
+            if (crypto == null || !key.equals(cryptoKey)) {
+                crypto = AESCrypto.create(key);
+                cryptoKey = key;
+            }
+            return crypto;
+        }
     }
 
     private String encrypt(String plain) {

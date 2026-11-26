@@ -3,10 +3,8 @@ package com.admin.common.utils;
 import com.admin.entity.User;
 import com.alibaba.fastjson2.JSON;
 import lombok.SneakyThrows;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import javax.annotation.PostConstruct;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
@@ -17,24 +15,17 @@ import java.util.Map;
 
 /**
  * JWT工具类，不使用第三方库实现
+ *
+ * 签名密钥不在这里存:统一走 PanelSecret.jwtSecret() —— 优先 vite_config.jwt_secret(备份恢复会带过来),
+ * 其次 .env 的 JWT_SECRET。换机器时登录态就不会因为 .env 里的值变了对不上。
  */
 @Component
 public class JwtUtil {
-    
-    @Value("${jwt-secret}")
-    private String secretKey;
-    
-    private static String SECRET_KEY;
     
     // token有效期，7天
     private static final long EXPIRE_TIME = 90L * 24 * 60 * 60 * 1000;
     // 算法
     private static final String ALGORITHM = "HmacSHA256";
-
-    @PostConstruct
-    public void init() {
-        SECRET_KEY = this.secretKey;
-    }
 
     /**
      * 生成JWT Token
@@ -186,7 +177,8 @@ public class JwtUtil {
     private static String calculateSignature(String encodedHeader, String encodedPayload) throws Exception {
         String content = encodedHeader + "." + encodedPayload;
         Mac hmac = Mac.getInstance(ALGORITHM);
-        SecretKeySpec secretKeySpec = new SecretKeySpec(SECRET_KEY.getBytes(StandardCharsets.UTF_8), ALGORITHM);
+        SecretKeySpec secretKeySpec = new SecretKeySpec(
+                PanelSecret.jwtSecret().getBytes(StandardCharsets.UTF_8), ALGORITHM);
         hmac.init(secretKeySpec);
         byte[] signatureBytes = hmac.doFinal(content.getBytes(StandardCharsets.UTF_8));
         return Base64.getUrlEncoder().withoutPadding().encodeToString(signatureBytes);

@@ -5,6 +5,7 @@ import com.admin.common.annotation.RequireRole;
 import com.admin.common.aop.LogAnnotation;
 import com.admin.common.lang.R;
 import com.admin.common.utils.JwtUtil;
+import com.admin.common.utils.PanelSecret;
 import org.springframework.web.bind.annotation.*;
 
 import javax.servlet.http.HttpServletRequest;
@@ -52,6 +53,10 @@ public class ViteConfigController extends BaseController {
     public R getConfigByName(@RequestBody Map<String, Object> params, HttpServletRequest request) {
         Object raw = params == null ? null : params.get("name");
         String name = raw == null ? "" : raw.toString();
+        // 面板密钥(jwt_secret)谁都别想读:管理员也不行,服务层还会再挡一道
+        if (PanelSecret.isSecretKey(name)) {
+            return R.err("配置不存在");
+        }
         if (!PUBLIC_KEYS.contains(name) && !isAdmin(request.getHeader("Authorization"))) {
             return R.err("配置不存在");
         }

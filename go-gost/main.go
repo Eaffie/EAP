@@ -119,7 +119,8 @@ func main() {
 	log := xlogger.NewLogger()
 	logger.SetDefault(log)
 
-	wsReporter := socket.StartWebSocketReporterWithConfig(config.Addr, config.Secret, config.Http, config.Tls, config.Socks, "1.2.6")
+	// 1.2.7:新增 SetPanelAddr(面板地址跟随域名)—— 面板按这个版本号决定要不要下发
+	wsReporter := socket.StartWebSocketReporterWithConfig(config.Addr, config.Secret, config.Http, config.Tls, config.Socks, "1.2.7")
 	defer wsReporter.Stop()
 	service.SetHTTPReportURL(config.Addr, config.Secret)
 

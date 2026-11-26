@@ -636,6 +636,15 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 		err = w.handleSetProbes(cmd.Data)
 		response.Type = "SetProbesResponse"
 
+	// 面板地址(域名变了让节点跟着改):写 config.json,延迟几秒退出让 systemd 拉起重连
+	case "SetPanelAddr":
+		var panelAddrMsg string
+		panelAddrMsg, err = w.handleSetPanelAddr(cmd.Data)
+		response.Type = "SetPanelAddrResponse"
+		if err == nil {
+			response.Message = panelAddrMsg
+		}
+
 	// Protocol blocking switches
 	case "SetProtocol":
 		err = w.handleSetProtocol(cmd.Data)
@@ -666,7 +675,8 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 	}
 
 	// 只读命令不改 gost 配置,不必重写 gost.json
-	readOnly := cmd.Type == "TcpPing" || cmd.Type == "SetProbes"
+	// (SetPanelAddr 改的是 config.json 里的面板地址,和 gost.json 无关)
+	readOnly := cmd.Type == "TcpPing" || cmd.Type == "SetProbes" || cmd.Type == "SetPanelAddr"
 
 	// 发送响应
 	if err != nil {
@@ -680,7 +690,10 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 			saveConfig()
 		}
 		response.Success = true
-		response.Message = "OK"
+		// 处理函数自己填了说明的(比如 SetPanelAddr 的"将在 N 秒后重连")就别覆盖成 OK
+		if response.Message == "" {
+			response.Message = "OK"
+		}
 	}
 
 	w.sendResponse(response)

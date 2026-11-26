@@ -233,6 +233,28 @@ gost_log_version() {
   journalctl -u gost --no-pager --since "$1" 2>/dev/null | grep -o 'version=[0-9][0-9.]*' | tail -n 1 | cut -d= -f2
 }
 
+# 写 systemd 单元(安装和更新都要调:更新路径以前不刷新单元,机器上会一直留着旧策略)
+#
+# 【Restart=always 不是随手改的】面板支持「面板地址跟着域名走」:节点收到 SetPanelAddr 后会改
+# config.json 并主动退出进程,让 systemd 用新地址重新拉起来。on-failure 只重启"异常退出"的进程,
+# 成功退出的不重启 —— 那样节点会在改完地址后永远不上线。
+write_service_unit() {
+  SERVICE_FILE="/etc/systemd/system/gost.service"
+  cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=Gost Proxy Service
+After=network.target
+
+[Service]
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/gost
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
 # 安装功能
 install_gost() {
   echo "🚀 开始安装 GOST..."
@@ -293,20 +315,7 @@ EOF
   chmod 600 "$INSTALL_DIR"/*.json
 
   # 创建 systemd 服务
-  SERVICE_FILE="/etc/systemd/system/gost.service"
-  cat > "$SERVICE_FILE" <<EOF
-[Unit]
-Description=Gost Proxy Service
-After=network.target
-
-[Service]
-WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/gost
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-EOF
+  write_service_unit
 
   # 启动服务
   systemctl daemon-reload
@@ -368,6 +377,11 @@ update_gost() {
   # 替换文件
   mv "$INSTALL_DIR/gost.new" "$INSTALL_DIR/gost"
   chmod +x "$INSTALL_DIR/gost"
+
+  # 刷新 systemd 单元:老机器上的单元可能是 Restart=on-failure,那样节点收到面板新地址后
+  # 主动退出就不会被拉起来(详见 write_service_unit 的说明)
+  write_service_unit
+  systemctl daemon-reload
 
   # 重启服务
   since=$(date '+%Y-%m-%d %H:%M:%S')

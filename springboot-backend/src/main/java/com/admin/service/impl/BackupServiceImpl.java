@@ -1,6 +1,7 @@
 package com.admin.service.impl;
 
 import com.admin.common.lang.R;
+import com.admin.common.utils.PanelSecret;
 import com.admin.service.BackupService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -167,7 +168,8 @@ public class BackupServiceImpl implements BackupService {
                     w.write("-- EAP 数据库备份\n");
                     w.write("-- 生成时间: " + LocalDateTime.now().format(READ_TS) + "\n");
                     w.write("-- 包含监控历史: " + (includeMonitor ? "是" : "否") + "\n");
-                    w.write("-- 来源: 面板「网站配置 → 备份与恢复」。可用同一页面上传恢复,也可在服务器上 eap restore。\n\n");
+                    w.write("-- 来源: 面板「网站配置 → 备份与恢复」。可用同一页面上传恢复,也可在服务器上 eap restore。\n");
+                    w.write("-- ⚠️ 本文件含面板密钥(jwt-secret)明文和全部业务数据:请妥善保管,别外传、别放在公网。\n\n");
                     w.write("SET NAMES utf8mb4;\n");
                     w.write("SET FOREIGN_KEY_CHECKS=0;\n\n");
                     if (!includeMonitor) {
@@ -185,6 +187,8 @@ public class BackupServiceImpl implements BackupService {
                         out.rows += writeTableData(w, st, table);
                     }
 
+                    writeSecretBlock(w);
+
                     w.write("SET FOREIGN_KEY_CHECKS=1;\n\n");
                     // panel_install.sh 的 _verify_sql_dump 认这一行,别删
                     w.write("-- Dump completed on " + LocalDateTime.now().format(READ_TS) + "\n");
@@ -197,6 +201,37 @@ public class BackupServiceImpl implements BackupService {
             }
         }
         return out;
+    }
+
+    /**
+     * 把当前生效的 jwt-secret 一起写进备份。
+     *
+     * 【为什么写进 vite_config 而不是"-- EAP_SECRET jwt-secret=..."那种标记行】
+     * 写成一条真实的配置记录,两条恢复通道都天然认得:
+     *   - 面板「备份与恢复」页面上传:走 splitStatements + JDBC,普通 INSERT 照常执行;
+     *   - 服务器上 eap restore:mysqldump 风格直接灌,注释里的东西它反而不一定认。
+     * 恢复完 PanelSecret 会优先读这条记录(见 PanelSecret / BackupServiceImpl.restore 里的 clearCache),
+     * DNS 账号和登录态立刻可用,不用改新机器的 .env、也不用重启后端。
+     *
+     * 用 DELETE + INSERT 而不是 ON DUPLICATE KEY:vite_config 只有 id 是主键、name 没有唯一索引,
+     * 「ON DUPLICATE」根本不会触发,会插出第二条 jwt_secret。
+     */
+    private void writeSecretBlock(BufferedWriter w) throws IOException {
+        String secret = PanelSecret.jwtSecret();
+        w.write("-- ----------------------------\n");
+        w.write("-- 面板密钥(恢复后自动生效:DNS 账号 / 登录态不用再跟 .env 手工对齐)\n");
+        w.write("-- ----------------------------\n");
+        if (secret == null || secret.trim().isEmpty()) {
+            w.write("-- 当前实例没读到 jwt-secret,本文件不含密钥,恢复后用新机器 .env 里的 JWT_SECRET\n\n");
+            return;
+        }
+        w.write("DELETE FROM `vite_config` WHERE `name` = '" + PanelSecret.KEY + "';\n");
+        StringBuilder sb = new StringBuilder();
+        sb.append("INSERT INTO `vite_config` (`name`, `value`, `time`) VALUES ('")
+                .append(PanelSecret.KEY).append("', ");
+        appendQuoted(sb, secret);
+        sb.append(", ").append(System.currentTimeMillis()).append(");\n\n");
+        w.write(sb.toString());
     }
 
     private List<String> listTables(Statement st, boolean includeMonitor) throws SQLException {
@@ -528,6 +563,10 @@ public class BackupServiceImpl implements BackupService {
             log.warn("恢复失败: {}", shortMsg(e.getMessage()));
             return R.err("恢复失败:" + shortMsg(e.getMessage()));
         } finally {
+            // 备份里可能带着另一台机器的 jwt-secret:恢复完立刻作废缓存,
+            // 下一次读就用库里的新值(DNS 解密 / JWT 验签都跟着走),不用重启后端
+            PanelSecret.clearCache();
+            log.info("面板密钥缓存已刷新,当前来源: {}", PanelSecret.fromDatabase() ? "备份(数据库)" : ".env");
             lock.unlock();
         }
     }
