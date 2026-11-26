@@ -417,8 +417,25 @@ export default function NodePage() {
               }
             }
             
+            // 节点上报的公网 IPv6(系统信息里的 ipv6_addrs)。后端也会把第一个自动写进库里的
+            // server_ipv6,但页面开着时这里直接跟着上报走,免得「有地址却一直显示没有」得手动刷新。
+            // 老版本节点/没有公网 v6 时整个字段不带(omitempty),这时保持原值不动。
+            const reportedV6: string[] | null = Array.isArray(systemInfo.ipv6_addrs)
+              ? systemInfo.ipv6_addrs
+                  .filter((x: any) => typeof x === 'string' && x.trim())
+                  .map((x: string) => x.trim())
+              : null;
+            const v6Patch = reportedV6
+              ? {
+                  reportedIpv6: reportedV6,
+                  // 库里已有地址(车主手填或之前自动填的)就不覆盖,和后端「只在空的时候填」一个口径
+                  serverIpv6: (node.serverIpv6 || '').trim() || reportedV6[0] || node.serverIpv6,
+                }
+              : {};
+
             return {
               ...node,
+              ...v6Patch,
               connectionStatus: 'online',
               // 节点在系统信息里顺带上报 sing-box 状态,这里实时更新
               singboxRunning: typeof systemInfo.singbox_running === 'boolean'
@@ -543,7 +560,7 @@ export default function NodePage() {
     const hasV6 = node.ipv6Dual === 1 || !!node.serverIpv6 || (node.reportedIpv6 || []).length > 0;
     const lines = [
       on ? '已开启 IPv6:IPv4 和 IPv6 都收' : '未开启 IPv6:只收 IPv4',
-      `公网 IPv6:${node.serverIpv6 || '未填'}`,
+      `公网 IPv6:${v6Addr(node) || '没有(未填,节点也没上报)'}`,
       `订阅里出:${sub}${offTip}(在「编辑」里改)`,
     ];
     // canSwitchListen:true/false = 节点上报过;null/undefined = 离线或面板刚重启还没收到上报,不能说「太旧」
@@ -575,14 +592,20 @@ export default function NodePage() {
     }
   }, [viewMode]);
 
-  // 卡片右上角 IPv6 小字:一眼看出这台机器到底有没有 IPv6(全量信息在 title 里)
+  // 这台机器到底有没有 IPv6 地址(和「开没开双栈监听」是两回事):
+  //   ① 库里存的 server_ipv6(车主手填,或节点上报后后端自动写进去的)
+  //   ② 节点这次上报的公网 v6(reportedIpv6,不入库,面板刚重启还没落库时靠它兜底)
+  // 两个都没有才算没有。Chip 上的 ●/○ 仍然只表示双栈开没开。
+  const v6Addr = (node: Node): string =>
+    (node.serverIpv6 || '').trim()
+    || (node.reportedIpv6 || []).map(x => (x || '').trim()).find(Boolean)
+    || '';
+
+  // 卡片右上角小字:有地址就摆地址,没有就说「无」
   const v6Short = (node: Node): string => {
-    const addr = (node.serverIpv6 || '').trim();
-    if (node.ipv6Dual === 1) {
-      if (!addr) return 'v6 无公网地址';
-      return `v6 ${addr.length > 20 ? `${addr.slice(0, 20)}…` : addr}`;
-    }
-    return 'v6 未开启';
+    const addr = v6Addr(node);
+    if (!addr) return 'v6 无';
+    return `v6 ${addr.length > 20 ? `${addr.slice(0, 20)}…` : addr}`;
   };
 
   // 列表里的「⋯」菜单分发:key → 原来那些 handler(handler 本身一个没改)
@@ -1182,7 +1205,7 @@ export default function NodePage() {
             </table>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 min-[1800px]:grid-cols-5 gap-3">
             {filteredNodes.map((node) => {
               const online = node.connectionStatus === 'online';
               const sys = online ? node.systemInfo : null;
@@ -1225,10 +1248,11 @@ export default function NodePage() {
                           IPv6<span className="text-[9px] leading-none">{v6on ? '●' : '○'}</span>
                         </Button>
                       </div>
-                      {/* 有没有 IPv6 要一眼看出来:开了显示地址,没地址 / 没开各说各的(全量信息在 Chip 的 title 里) */}
+                      {/* 有没有 IPv6 只按「有没有地址」显示:有就摆地址,没有就「v6 无」;
+                          双栈开没开只看上面那个 Chip 的 ●/○ */}
                       <div
-                        className="max-w-[11rem] truncate text-[10px] text-default-500"
-                        title={node.serverIpv6 || (node.reportedIpv6 || []).filter(Boolean).join('、') || '这台机器没有公网 IPv6'}
+                        className="max-w-[11rem] min-w-0 truncate text-[10px] text-default-500"
+                        title={v6Addr(node) || '这台机器没有公网 IPv6'}
                       >
                         {v6Short(node)}
                       </div>
@@ -1321,8 +1345,9 @@ export default function NodePage() {
                     </span>
                   </div>
 
-                  {/* 操作按钮:6 个动作,文案压到 2 个字,宽度各自按文字自适应(不等于分铺满,右下会空出来) */}
-                  <div className="flex flex-wrap gap-1.5">
+                  {/* 操作按钮:6 个动作固定两行三列(安装/编辑/监控 → 重推/指向/删除)。
+                      按钮宽各自按两字文字自适应(w-fit 的网格),不撑满卡片 —— 卡片因此能变窄、一行多排一台 */}
+                  <div className="grid w-fit grid-cols-3 gap-1.5">
                     <Button
                       size="sm"
                       variant="flat"
