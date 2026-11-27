@@ -34,6 +34,9 @@ class SubNamesTest {
     private static String oldLinkName(String protocol, String remarkField, String nodeName, String landingName,
                                       boolean relay, boolean aggregate) {
         String namePrefix = "";
+        if (relay && (r == null || r.isEmpty()) && ln != null && !ln.isEmpty() && !ln.startsWith("落地#")) {
+            return ln;
+        }
         if (aggregate) {
             StringBuilder prefix = new StringBuilder(nodeName);
             if (relay) {

@@ -21,7 +21,8 @@ import java.util.Set;
  *
  * 优先级(三月 2026-11-01 拍板):
  *   车友协议名(原样)> 线路别名(「别名 」+ 全局改名或协议名)> 以前的规则。
- * 以前的规则:改过名(全局 remark)就用 remark;没改过用协议名,聚合订阅再加「机器→落地 」前缀。
+ * 中转:落地有名字 → 只用落地名(不加前缀/后缀);改过名的按改名走。
+ * 直连 / 老化规则:改过名(全局 remark)就用 remark;没改过用协议名,聚合订阅再加「机器 」前缀。
  *
  * 【没设车友名字时必须逐字节和以前一样】SubNamesTest 里留着一份老逻辑的副本逐个比对。
  */
@@ -87,6 +88,12 @@ public final class SubNames {
         String base = customName ? globalRemark : protocolDisplayName(protocol);
         if (notEmpty(lineAlias)) {
             return new Name(lineAlias + " " + base, true);
+        }
+        // 中转(有落地):落地有名字就直接用它 —— 不加「机器名→」前缀,也不加协议名后缀。
+        // 用户 2026-11-27 拍板:新落地只要备注名,别的一律不要。
+        // 改过名(customName)的仍按改名走;落地记录丢了(「落地#id」)才退回老规则。
+        if (relay && !customName && notEmpty(landingName) && !landingName.startsWith("落地#")) {
+            return new Name(landingName, false);
         }
         // ↓ 以前的规则,一个字都不能变
         if (aggregate && !customName) {
