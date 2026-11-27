@@ -34,8 +34,10 @@ class SubNamesTest {
     private static String oldLinkName(String protocol, String remarkField, String nodeName, String landingName,
                                       boolean relay, boolean aggregate) {
         String namePrefix = "";
-        if (relay && (r == null || r.isEmpty()) && ln != null && !ln.isEmpty() && !ln.startsWith("落地#")) {
-            return ln;
+        // 2026-11-27 起:中转落地有自己的名字就直接用落地名,不加前缀/后缀
+        boolean custom = remarkField != null && !remarkField.isEmpty();
+        if (relay && !custom && landingName != null && !landingName.isEmpty() && !landingName.startsWith("落地#")) {
+            return landingName;
         }
         if (aggregate) {
             StringBuilder prefix = new StringBuilder(nodeName);
